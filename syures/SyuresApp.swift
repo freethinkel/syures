@@ -11,7 +11,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotKey: HotKey?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        #if DEBUG
+        Config.selfCheck()
+        Launcher.fuzzySelfCheck()
+        #endif
         NSApp.setActivationPolicy(.accessory)
+        Config.writeSchema()
         Config.writeDefaultIfMissing()
 
         // Carbon registration is one-shot, so the hotkey is read at launch only.
