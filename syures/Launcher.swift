@@ -74,6 +74,7 @@ final class Launcher {
     /// `true` means the item opened a submenu, so the panel should stay up.
     @discardableResult
     func run(_ item: Item) -> Bool {
+        remember(item.name)
         switch item {
         case .app(let url):
             NSWorkspace.shared.openApplication(at: url, configuration: .init())
@@ -176,7 +177,7 @@ final class Launcher {
         for group in groups {
             for entry in group {
                 if let score = Launcher.fuzzyScore(needle, entry.haystack, bonus: entry.bonus) {
-                    scored.append((entry, score))
+                    scored.append((entry, score + bonus(for: entry.name)))
                 }
             }
         }
@@ -184,11 +185,39 @@ final class Launcher {
         return scored.map(\.entry.item)
     }
 
+    // MARK: - Frecency
+
+    private static let frecencyKey = "frecency"
+
+    /// `name -> [launch count, last run]`, so a familiar item outranks its same-prefix neighbours.
+    /// ponytail: whole dict rewritten on every launch; it is a handful of names, not a database
+    private var frecency: [String: [Double]] =
+        UserDefaults.standard.dictionary(forKey: Launcher.frecencyKey) as? [String: [Double]] ?? [:]
+
+    private func remember(_ name: String) {
+        let count = frecency[name]?.first ?? 0
+        frecency[name] = [count + 1, Date().timeIntervalSinceReferenceDate]
+        UserDefaults.standard.set(frecency, forKey: Launcher.frecencyKey)
+    }
+
+    private func bonus(for name: String) -> Int {
+        guard let record = frecency[name], record.count == 2 else { return 0 }
+        return Launcher.frecencyBonus(
+            count: record[0], age: Date().timeIntervalSinceReferenceDate - record[1])
+    }
+
+    /// Launch count halved every two weeks, so a burst of launches fades instead of sticking.
+    /// Capped at twice the weight: frecency breaks ties, it does not outrank a better match.
+    static func frecencyBonus(count: Double, age: TimeInterval) -> Int {
+        Int(Double(Weight.frecency) * min(2, count * pow(0.5, age / (14 * 86400))))
+    }
+
     private enum Weight {
         static let match = 16, consecutive = 8
         static let prefix = 8, delimiter = 4, camel = 4
         static let gapOpen = 3, gapExtend = 1
         static let typo = 20
+        static let frecency = 24
     }
 
     /// Lowercased UTF-8 bytes of `name` plus a positional bonus for each byte: start of the
@@ -296,6 +325,11 @@ final class Launcher {
         assert(score("actmon", "Activity Monitor") > 0)  // words run together
         assert(score("am", "Amphetamine") > score("am", "Activity Monitor"))  // contiguous wins
         assert(score("chr", "Google Chrome") > score("chr", "Chrome Remote Desktop Host Uninstaller"))
+        // Frecency: more launches rank higher, and an old burst decays below a fresh single run.
+        assert(frecencyBonus(count: 3, age: 0) > frecencyBonus(count: 1, age: 0))
+        assert(frecencyBonus(count: 5, age: 90 * 86400) < frecencyBonus(count: 1, age: 0))
+        // A few launches are enough to flip a one-letter tie between neighbours.
+        assert(frecencyBonus(count: 2, age: 0) > score("s", "Safari") - score("s", "Slack"))
     }
     #endif
 
