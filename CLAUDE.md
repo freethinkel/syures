@@ -42,9 +42,10 @@ Ownership chain: `SyuresApp` → `AppDelegate` → `LauncherPanel` → `Launcher
 - **Launcher.swift** — `@Observable` model. Apps are scanned once at launch from a fixed list of
   `/Applications`-style paths. Search is a fuzzy match over config commands + apps: a
   Smith-Waterman-style DP (`fuzzyScore`) scoring contiguous runs, word starts and camelCase, with
-  one typo tolerated, plus a frecency bonus (launch counts in UserDefaults, halved every two
-  weeks, capped so it only breaks ties), sorted by score — the full list is shown, the card
-  scrolls. Setting `query`
+  one typo tolerated, sorted by score — the full list is shown, the card scrolls. Frecency
+  (launch counts in UserDefaults, halved every two weeks) is the tiebreaker, never a bonus added
+  to the score: the gaps between a better and a worse match are as small as 2 points, so any
+  bonus large enough to matter would overturn them. Setting `query`
   triggers `search()` via `didSet`. `fuzzySelfCheck()` (DEBUG only, called from `AppDelegate`)
   asserts the ranking rules.
 - **LauncherView.swift** — the whole UI, driven entirely by `launcher.config.appearance`. Never

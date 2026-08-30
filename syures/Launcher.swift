@@ -25,14 +25,17 @@ final class Launcher {
     private struct Entry {
         let item: Item
         let name: String
+        /// Key of this item's frecency record.
+        let frecencyID: String
         /// `name` lowercased, as UTF-8 bytes.
         let haystack: [UInt8]
         /// Positional bonus per byte of `haystack`.
         let bonus: [Int]
 
-        init(_ item: Item) {
+        init(_ item: Item, in menu: String = "") {
             self.item = item
             name = item.name
+            frecencyID = Launcher.frecencyID(item, in: menu)
             (haystack, bonus) = Launcher.matchKey(name)
         }
     }
@@ -74,7 +77,7 @@ final class Launcher {
     /// `true` means the item opened a submenu, so the panel should stay up.
     @discardableResult
     func run(_ item: Item) -> Bool {
-        remember(item.name)
+        remember(Launcher.frecencyID(item, in: path.joined(separator: "/")))
         switch item {
         case .app(let url):
             NSWorkspace.shared.openApplication(at: url, configuration: .init())
@@ -107,7 +110,8 @@ final class Launcher {
     }
 
     private func push(_ title: String, _ commands: [Config.Command]) {
-        stack.append((title, commands.map { Entry(.command($0)) }))
+        let menu = (path + [title]).joined(separator: "/")
+        stack.append((title, commands.map { Entry(.command($0), in: menu) }))
         query = ""  // didSet re-runs the search against the level just pushed
     }
 
@@ -173,15 +177,22 @@ final class Launcher {
     }
 
     private func ranked(_ needle: [UInt8], in groups: [[Entry]]) -> [Item] {
-        var scored: [(entry: Entry, score: Int)] = []
+        var scored: [(entry: Entry, score: Int, frecency: Double)] = []
+        let now = Date().timeIntervalSinceReferenceDate
         for group in groups {
             for entry in group {
                 if let score = Launcher.fuzzyScore(needle, entry.haystack, bonus: entry.bonus) {
-                    scored.append((entry, score + bonus(for: entry.name)))
+                    scored.append((entry, score, frecency(for: entry.frecencyID, now: now)))
                 }
             }
         }
-        scored.sort { $0.score == $1.score ? $0.entry.name < $1.entry.name : $0.score > $1.score }
+        // Frecency only orders equally good matches, so a better match always wins — a weighted
+        // bonus cannot do that, since the gaps it would have to stay under are as small as 2.
+        scored.sort {
+            if $0.score != $1.score { return $0.score > $1.score }
+            if $0.frecency != $1.frecency { return $0.frecency > $1.frecency }
+            return $0.entry.name < $1.entry.name
+        }
         return scored.map(\.entry.item)
     }
 
@@ -189,27 +200,34 @@ final class Launcher {
 
     private static let frecencyKey = "frecency"
 
-    /// `name -> [launch count, last run]`, so a familiar item outranks its same-prefix neighbours.
-    /// ponytail: whole dict rewritten on every launch; it is a handful of names, not a database
-    private var frecency: [String: [Double]] =
-        UserDefaults.standard.dictionary(forKey: Launcher.frecencyKey) as? [String: [Double]] ?? [:]
-
-    private func remember(_ name: String) {
-        let count = frecency[name]?.first ?? 0
-        frecency[name] = [count + 1, Date().timeIntervalSinceReferenceDate]
-        UserDefaults.standard.set(frecency, forKey: Launcher.frecencyKey)
+    /// Kind- and menu-qualified, so an app never shares a record with a command of the same name,
+    /// and neither does a command with its namesake one submenu over.
+    private static func frecencyID(_ item: Item, in menu: String) -> String {
+        switch item {
+        case .app(let url): "app:\(url.path)"
+        case .command(let command): "cmd:\(menu)/\(command.name)"
+        }
     }
 
-    private func bonus(for name: String) -> Int {
-        guard let record = frecency[name], record.count == 2 else { return 0 }
-        return Launcher.frecencyBonus(
-            count: record[0], age: Date().timeIntervalSinceReferenceDate - record[1])
+    /// `frecencyID -> [launch count, last run]`, so a familiar item leads its equally good rivals.
+    /// ponytail: whole dict rewritten on every launch; it is a handful of names, not a database
+    private var records: [String: [Double]] =
+        UserDefaults.standard.dictionary(forKey: Launcher.frecencyKey) as? [String: [Double]] ?? [:]
+
+    private func remember(_ id: String) {
+        let count = records[id]?.first ?? 0
+        records[id] = [count + 1, Date().timeIntervalSinceReferenceDate]
+        UserDefaults.standard.set(records, forKey: Launcher.frecencyKey)
+    }
+
+    private func frecency(for id: String, now: TimeInterval) -> Double {
+        guard let record = records[id], record.count == 2 else { return 0 }
+        return Launcher.frecency(count: record[0], age: now - record[1])
     }
 
     /// Launch count halved every two weeks, so a burst of launches fades instead of sticking.
-    /// Capped at twice the weight: frecency breaks ties, it does not outrank a better match.
-    static func frecencyBonus(count: Double, age: TimeInterval) -> Int {
-        Int(Double(Weight.frecency) * min(2, count * pow(0.5, age / (14 * 86400))))
+    static func frecency(count: Double, age: TimeInterval) -> Double {
+        count * pow(0.5, age / (14 * 86400))
     }
 
     private enum Weight {
@@ -217,7 +235,6 @@ final class Launcher {
         static let prefix = 8, delimiter = 4, camel = 4
         static let gapOpen = 3, gapExtend = 1
         static let typo = 20
-        static let frecency = 24
     }
 
     /// Lowercased UTF-8 bytes of `name` plus a positional bonus for each byte: start of the
@@ -326,10 +343,10 @@ final class Launcher {
         assert(score("am", "Amphetamine") > score("am", "Activity Monitor"))  // contiguous wins
         assert(score("chr", "Google Chrome") > score("chr", "Chrome Remote Desktop Host Uninstaller"))
         // Frecency: more launches rank higher, and an old burst decays below a fresh single run.
-        assert(frecencyBonus(count: 3, age: 0) > frecencyBonus(count: 1, age: 0))
-        assert(frecencyBonus(count: 5, age: 90 * 86400) < frecencyBonus(count: 1, age: 0))
-        // A few launches are enough to flip a one-letter tie between neighbours.
-        assert(frecencyBonus(count: 2, age: 0) > score("s", "Safari") - score("s", "Slack"))
+        // It never outranks a better match — `ranked` sorts by score first, so the asserts above
+        // hold whatever the launch history is.
+        assert(frecency(count: 3, age: 0) > frecency(count: 1, age: 0))
+        assert(frecency(count: 5, age: 90 * 86400) < frecency(count: 1, age: 0))
     }
     #endif
 
