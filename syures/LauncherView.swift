@@ -240,6 +240,8 @@ private struct ResultRow: View {
                 .resizable()
         case .command(let command):
             Glyph(name: command.icon ?? "terminal", size: 18, theme: theme)
+        case .provided(let result):
+            Glyph(name: result.icon ?? "sparkles", size: 18, theme: theme)
         }
     }
 }

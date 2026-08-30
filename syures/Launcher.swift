@@ -1,15 +1,18 @@
 import AppKit
+import JavaScriptCore
 
 @Observable
 final class Launcher {
     enum Item: Hashable {
         case app(URL)
         case command(Config.Command)
+        case provided(Provided)
 
         var name: String {
             switch self {
             case .app(let url): url.deletingPathExtension().lastPathComponent
             case .command(let command): command.name
+            case .provided(let result): result.name
             }
         }
 
@@ -17,9 +20,28 @@ final class Launcher {
             switch self {
             case .app: nil
             case .command(let command): command.subtitle
+            case .provided(let result): result.subtitle
             }
         }
     }
+
+    /// A result computed from the query itself. Its action is data, not a closure, so a provider
+    /// stays a pure function and `Provided` stays `Hashable` — it is its own id in the list.
+    struct Provided: Hashable {
+        let name: String
+        let subtitle: String?
+        let icon: String?
+        let action: Action
+
+        enum Action: Hashable {
+            case copy(String)
+            case run(String)
+        }
+    }
+
+    /// Synchronous and pure: it runs on every keystroke, which is the whole point — a `menu`
+    /// plugin cannot, being a `fork`/`exec`.
+    typealias Provider = (String) -> [Provided]
 
     /// A searchable item with its match key precomputed, so the keystroke path allocates nothing.
     private struct Entry {
@@ -98,11 +120,23 @@ final class Launcher {
     /// `true` means the item opened a submenu, so the panel should stay up.
     @discardableResult
     func run(_ item: Item) -> Bool {
+        if case .provided(let result) = item {
+            switch result.action {
+            case .copy(let text):
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+            case .run(let script):
+                Launcher.shell(script, nil)
+            }
+            return false
+        }
         remember(Launcher.frecencyID(item, in: path.joined(separator: "/")))
         switch item {
         case .app(let url):
             NSWorkspace.shared.openApplication(at: url, configuration: .init())
             return false
+        case .provided:
+            return false  // handled above
         case .command(let command):
             if let children = command.commands {
                 push(command, children, script: nil)
@@ -273,7 +307,41 @@ final class Launcher {
                 : ranked(needle, in: [level.entries])
             return
         }
-        results = needle.isEmpty ? [] : ranked(needle, in: [commands, apps])
+        guard !needle.isEmpty else {
+            results = []
+            return
+        }
+        // Providers come first and unranked, the way Raycast puts a calculation above the list.
+        let provided = Launcher.providers.flatMap { $0(query) }.map(Item.provided)
+        results = provided + ranked(needle, in: [commands, apps])
+    }
+
+    // MARK: - Providers
+
+    // ponytail: one array, no protocol and no config — order is the array's, revisit at provider #2
+    private static let providers: [Provider] = [calculator]
+
+    /// ponytail: JavaScriptCore rather than a parser or `NSExpression` — a half-typed expression
+    /// returns nil here, where `NSExpression(format:)` raises an ObjC exception Swift cannot catch.
+    /// `unsafe` the way `iconCache` is: providers are pure and synchronous, so this is touched
+    /// from `search()` on the main thread and nowhere else.
+    nonisolated(unsafe) private static let js: JSContext = {
+        let context = JSContext()!
+        context.exceptionHandler = { _, _ in }  // "2+" is a work in progress, not an error
+        return context
+    }()
+
+    /// `2.5*2` -> `= 5`, copied on Enter.
+    nonisolated static func calculator(_ query: String) -> [Provided] {
+        let expression = query.trimmingCharacters(in: .whitespaces)
+        // The whitelist is what keeps `js` an arithmetic evaluator instead of an eval box.
+        guard expression.contains(where: "+-*/%".contains),
+            expression.allSatisfy({ $0.isNumber || "+-*/%(). ".contains($0) }),
+            let value = js.evaluateScript(expression), value.isNumber,
+            value.toDouble().isFinite
+        else { return [] }
+        let text = value.toDouble().formatted(.number.precision(.fractionLength(0...10)).grouping(.never))
+        return [Provided(name: "= \(text)", subtitle: expression, icon: "equal.square", action: .copy(text))]
     }
 
     private func ranked(_ needle: [UInt8], in groups: [[Entry]]) -> [Item] {
@@ -306,6 +374,7 @@ final class Launcher {
         switch item {
         case .app(let url): "app:\(url.path)"
         case .command(let command): "cmd:\(menu)/\(command.name)"
+        case .provided: ""  // provider results are recomputed every keystroke, never remembered
         }
     }
 
@@ -419,7 +488,7 @@ final class Launcher {
     }
 
     #if DEBUG
-    static func fuzzySelfCheck() {
+    static func selfCheck() {
         func score(_ needle: String, _ name: String) -> Int {
             guard let value = fuzzyScore(needle, name) else {
                 assertionFailure("\(needle) should match \(name)")
@@ -447,6 +516,19 @@ final class Launcher {
         // hold whatever the launch history is.
         assert(frecency(count: 3, age: 0) > frecency(count: 1, age: 0))
         assert(frecency(count: 5, age: 90 * 86400) < frecency(count: 1, age: 0))
+        // Providers: a result on every keystroke, nothing for a query that is not arithmetic.
+        assert(calculator("2.5*2").first?.name == "= 5")
+        assert(calculator("5/2").first?.action == .copy("2.5"))
+        assert(calculator("0.1+0.2").first?.name == "= 0.3")
+        assert(calculator("chrome").isEmpty)
+        assert(calculator("2+").isEmpty)
+        assert(calculator("1/0").isEmpty)
+        // ...and it leads the fuzzy results, which still work.
+        let launcher = Launcher()
+        launcher.query = "2+2"
+        assert(launcher.results.first == .provided(calculator("2+2")[0]))
+        launcher.query = "chrome"
+        assert(!launcher.results.contains { if case .provided = $0 { true } else { false } })
     }
     #endif
 

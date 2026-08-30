@@ -46,8 +46,8 @@ Ownership chain: `SyuresApp` → `AppDelegate` → `LauncherPanel` → `Launcher
   (launch counts in UserDefaults, halved every two weeks) is the tiebreaker, never a bonus added
   to the score: the gaps between a better and a worse match are as small as 2 points, so any
   bonus large enough to matter would overturn them. Setting `query`
-  triggers `search()` via `didSet`. `fuzzySelfCheck()` (DEBUG only, called from `AppDelegate`)
-  asserts the ranking rules.
+  triggers `search()` via `didSet`. `selfCheck()` (DEBUG only, called from `AppDelegate`)
+  asserts the ranking rules, the calculator provider and its place in the results.
 - **LauncherView.swift** — the whole UI, driven entirely by `launcher.config.appearance`. Never
   hardcode sizes/colors here; add a config key instead. The card is the scroll view itself: the
   field floats over it as a ZStack sibling (an overlay would be capped by the card's height, which
@@ -89,6 +89,15 @@ authored order; at the root an empty query shows nothing.
 
 Cancellation only skips a debounced run that has not started; a process already running goes to
 the end and its output is dropped.
+
+A `menu` needs a `prefix` to recompute per keystroke, and pays for it with debounce, cancellation
+and generation checks. What must recompute on every keystroke without a script (calculator,
+converter) is an *internal provider* instead: a synchronous pure `(String) -> [Provided]` in
+`Launcher.providers`, in-process, so none of the three is needed. Its result carries an `Action`
+(`copy`/`run`) as data, not a closure, which keeps `Provided` `Hashable` and the provider pure.
+Providers run only at the root and only when no prefix matched; their results come first and skip
+both fuzzy ranking and frecency. Registration is that one array — no config, no protocol; async
+providers (file search) are deliberately out of the contract.
 
 Adding user-facing customization means adding a key to `Config.Appearance`/`Config.Command`, not
 new UI.

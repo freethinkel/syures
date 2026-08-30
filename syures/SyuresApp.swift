@@ -13,7 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         #if DEBUG
         Config.selfCheck()
-        Launcher.fuzzySelfCheck()
+        Launcher.selfCheck()
         #endif
         NSApp.setActivationPolicy(.accessory)
         Config.writeSchema()
