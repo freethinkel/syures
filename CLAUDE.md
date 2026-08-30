@@ -72,7 +72,8 @@ A `Config.Command` does exactly one of three things, and the schema enforces the
 `plugins/gh-search` is the worked example of all this — copy `plugins/` next to the config to use it.
 
 A `prefix` ("gh ") is the exception to fuzzy search: at the root it takes the query over and the
-rest of it is shell-quoted onto the command's `run`/`menu` one-liner as `$1`. Still on Enter, so a
+rest of it is passed to the command's `run`/`menu` one-liner as a real `sh` positional parameter,
+`$1` — never spliced into the script text. The longest matching prefix wins. Still on Enter, so a
 plugin runs once per launch — see below.
 
 Submenus live in `Launcher.stack`, so Esc/Backspace step back without the plugin emitting a `..`

@@ -78,6 +78,7 @@ struct Config: Decodable {
         [
           { "name": "Style", "commands": [{ "name": "Dark", "run": "dark-mode on" }] },
           { "name": "Projects", "menu": "./plugins/projects ~" },
+          { "name": "Google", "prefix": "g", "run": "open https://google.com" },
           { "name": "GitHub", "prefix": "gh ", "menu": "./plugins/gh-search" }
         ]
         """
@@ -91,8 +92,10 @@ struct Config: Decodable {
         // A prefix takes the query over; anything else still goes to the fuzzy search.
         assert(Launcher.prefixed("gh swift", in: commands)?.argument == "swift")
         assert(Launcher.prefixed("GH swift", in: commands)?.command.name == "GitHub")
-        assert(Launcher.prefixed("ghost", in: commands) == nil)
         assert(Launcher.prefixed("projects", in: commands) == nil)
+        // The longest prefix wins, whatever order the entries are written in.
+        assert(Launcher.prefixed("g maps", in: commands)?.command.name == "Google")
+        assert(Launcher.prefixed("ghost", in: commands)?.command.name == "Google")
     }
     #endif
 
@@ -211,8 +214,8 @@ struct Config: Decodable {
         var commands: [Command]?
         /// Shell one-liner whose stdout is a JSON array of commands — the submenu it opens.
         var menu: String?
-        /// Typing this at the root hands the rest of the query to `run` / `menu` as its first
-        /// argument — still on Enter, so the script runs once, not per keystroke.
+        /// Typing this at the root hands the rest of the query to `run` / `menu` as `$1` — still
+        /// on Enter, so the script runs once, not per keystroke.
         var prefix: String?
     }
 }
@@ -428,7 +431,13 @@ private extension Config {
             },
             "prefix": {
               "type": "string",
-              "description": "Typing this at the root hands the rest of the query to run / menu as its first argument, on Enter. Example: prefix \"gh \" turns \"gh swift\" into ./plugins/gh-search swift."
+              "description": "Typing this at the root hands the rest of the query to run / menu as $1, on Enter. Example: prefix 'gh ' turns 'gh swift' into ./plugins/gh-search swift. The longest matching prefix wins."
+            }
+          },
+          "dependentSchemas": {
+            "prefix": {
+              "not": { "required": ["commands"] },
+              "description": "A submenu written out in place has no script to hand the argument to."
             }
           }
         }

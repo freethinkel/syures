@@ -52,7 +52,8 @@ final class Launcher {
     private var commands: [Entry] = []
 
     /// Text after a matched `prefix` — the argument the command's script gets on Enter.
-    private var argument = ""
+    /// `nil` means no prefix matched, so the script is run with no argument at all.
+    private var argument: String?
 
     /// One entry per submenu the user has stepped into. Empty means the root list.
     private var stack: [(title: String, entries: [Entry])] = []
@@ -90,14 +91,13 @@ final class Launcher {
                 push(command.name, children)
                 return true
             }
-            // A prefixed command is handed the rest of the query — on Enter, so a plugin still
-            // runs once per launch and needs no debounce.
-            let suffix = command.prefix == nil ? "" : " " + Launcher.quoted(argument)
+            // A prefixed command is handed the rest of the query as `$1` — on Enter, so a plugin
+            // still runs once per launch and needs no debounce.
             if let script = command.menu {
-                openMenu(command.name, script + suffix)
+                openMenu(command.name, script, argument)
                 return true
             }
-            if let script = command.run { Launcher.shell(script + suffix) }
+            if let script = command.run { Launcher.shell(script, argument) }
             return false
         }
     }
@@ -122,20 +122,20 @@ final class Launcher {
     }
 
     /// Runs the script and reads its stdout as the submenu to open.
-    private func openMenu(_ title: String, _ script: String) {
+    private func openMenu(_ title: String, _ script: String, _ argument: String?) {
         Task { @MainActor in
-            guard let commands = await Launcher.produce(script, in: Config.directory) else { return }
+            guard let commands = await Launcher.produce(script, argument, in: Config.directory) else { return }
             push(title, commands)
         }
     }
 
     // ponytail: no spinner and no cancellation — a slow script just makes the panel wait;
     // add both once a plugin takes longer than a blink
-    private static func produce(_ script: String, in directory: URL) async -> [Config.Command]? {
+    private static func produce(_ script: String, _ argument: String?, in directory: URL) async -> [Config.Command]? {
         await Task.detached {
             let process = Process()
             process.executableURL = URL(filePath: "/bin/sh")
-            process.arguments = ["-c", script]
+            process.arguments = shellArguments(script, argument)
             process.currentDirectoryURL = directory
             let pipe = Pipe()
             process.standardOutput = pipe
@@ -159,34 +159,38 @@ final class Launcher {
         }.value
     }
 
-    /// Single-quoted for `/bin/sh`, so spaces and `$` in the query stay one literal argument.
-    private static func quoted(_ text: String) -> String {
-        "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    /// Passed to `sh` as a real positional parameter, so the query never becomes shell syntax.
+    /// The `"syures"` in the middle is `$0` — `sh -c` spends it on the script name.
+    private static func shellArguments(_ script: String, _ argument: String?) -> [String] {
+        ["-c", script, "syures"] + (argument.map { [$0] } ?? [])
     }
 
-    private static func shell(_ script: String) {
+    private static func shell(_ script: String, _ argument: String?) {
         let process = Process()
         process.executableURL = URL(filePath: "/bin/sh")
-        process.arguments = ["-c", script]
+        process.arguments = shellArguments(script, argument)
         // `./script.sh` in a command means what it looks like: next to the config.
         process.currentDirectoryURL = Config.directory
         try? process.run()
     }
 
     /// The root command whose `prefix` starts `query`, and the rest of the query — its argument.
+    /// The longest prefix wins, so a `"g"` entry does not shadow a `"gh "` one written after it.
     static func prefixed(_ query: String, in commands: [Config.Command]) -> (command: Config.Command, argument: String)? {
+        var best: (command: Config.Command, argument: String)?
         for command in commands {
             guard let prefix = command.prefix, !prefix.isEmpty,
+                  prefix.count > best?.command.prefix?.count ?? 0,
                   let match = query.range(of: prefix, options: [.caseInsensitive, .anchored])
             else { continue }
-            return (command, String(query[match.upperBound...]))
+            best = (command, String(query[match.upperBound...]))
         }
-        return nil
+        return best
     }
 
     private func search() {
         selected = 0
-        argument = ""
+        argument = nil
         let needle = Array(query.lowercased().utf8)
 
         if stack.isEmpty, let match = Launcher.prefixed(query, in: config.commands) {
