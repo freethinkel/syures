@@ -68,6 +68,10 @@ final class LauncherPanel: NSPanel {
     /// swallowed so the text field doesn't also start selecting.
     override func sendEvent(_ event: NSEvent) {
         switch event.type {
+        // The field's editor eats Backspace before SwiftUI's `onKeyPress` sees it, so the
+        // step-out-of-a-submenu case is caught here, a level up. 51 is kVK_Delete.
+        case .keyDown where event.keyCode == 51 && event.modifierFlags.intersection([.command, .option, .control]).isEmpty && launcher.query.isEmpty:
+            if launcher.back() { return }
         case .leftMouseDown where dragZone.contains(event.locationInWindow):
             dragAnchor = NSEvent.mouseLocation
             dragStart = frame.origin

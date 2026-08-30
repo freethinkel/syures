@@ -77,7 +77,9 @@ struct Config: Decodable {
         let json = """
         [
           { "name": "Style", "commands": [{ "name": "Dark", "run": "dark-mode on" }] },
-          { "name": "Projects", "menu": "./plugins/projects ~" }
+          { "name": "Projects", "menu": "./plugins/projects ~" },
+          { "name": "Google", "prefix": "g", "run": "open https://google.com" },
+          { "name": "GitHub", "prefix": "gh ", "menu": "./plugins/gh-search \\"$1\\"" }
         ]
         """
         let decoder = JSONDecoder()
@@ -87,6 +89,13 @@ struct Config: Decodable {
         assert(commands[0].menu == nil)
         assert(commands[1].menu == "./plugins/projects ~")
         assert(commands[1].commands == nil)
+        // A prefix takes the query over; anything else still goes to the fuzzy search.
+        assert(Launcher.prefixed("gh swift", in: commands)?.argument == "swift")
+        assert(Launcher.prefixed("GH swift", in: commands)?.command.name == "GitHub")
+        assert(Launcher.prefixed("projects", in: commands) == nil)
+        // The longest prefix wins, whatever order the entries are written in.
+        assert(Launcher.prefixed("g maps", in: commands)?.command.name == "Google")
+        assert(Launcher.prefixed("ghost", in: commands)?.command.name == "Google")
     }
     #endif
 
@@ -205,6 +214,9 @@ struct Config: Decodable {
         var commands: [Command]?
         /// Shell one-liner whose stdout is a JSON array of commands — the submenu it opens.
         var menu: String?
+        /// Typing this at the root hands the rest of the query to `run` / `menu` as `$1` — still
+        /// on Enter, so the script runs once, not per keystroke.
+        var prefix: String?
     }
 }
 
@@ -298,6 +310,8 @@ private extension Config {
         //   { "name": "Dark", "run": "dark-mode on" },
         // ]},
         // { "name": "Projects", "menu": "./plugins/projects ~" },  // submenu printed by a script
+        // { "name": "GitHub", "prefix": "gh ", "icon": "globe",   // "gh swift" hands "swift" to $1
+        //   "menu": "./plugins/gh-search \\"$1\\"" },
       ],
     }
     """
@@ -416,6 +430,16 @@ private extension Config {
             "menu": {
               "type": "string",
               "description": "Shell one-liner whose stdout is a JSON array of commands — the submenu it opens. Same shape as this file, so entries can nest further."
+            },
+            "prefix": {
+              "type": "string",
+              "description": "Typing this at the root hands the rest of the query to run / menu as the shell parameter $1, on Enter — a script of your own gets it only if the one-liner passes it on: './plugins/gh-search \\"$1\\"'. The longest matching prefix wins."
+            }
+          },
+          "dependentSchemas": {
+            "prefix": {
+              "not": { "required": ["commands"] },
+              "description": "A submenu written out in place has no script to hand the argument to."
             }
           }
         }
