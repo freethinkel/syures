@@ -337,10 +337,17 @@ final class Launcher {
         // The whitelist is what keeps `js` an arithmetic evaluator instead of an eval box.
         guard expression.contains(where: "+-*/%".contains),
             expression.allSatisfy({ $0.isNumber || "+-*/%(). ".contains($0) }),
+            // ponytail: `2024-01-15` is a date and `555-1234` a phone, not subtraction — when `-`
+            // is the only operator, a space is what says "I meant math".
+            expression.contains(where: "+*/%".contains) || expression.contains(" "),
             let value = js.evaluateScript(expression), value.isNumber,
             value.toDouble().isFinite
         else { return [] }
-        let text = value.toDouble().formatted(.number.precision(.fractionLength(0...10)).grouping(.never))
+        // Significant digits, not fraction digits, or `1/100000000000` copies "0"; the fixed
+        // locale keeps the copied text re-typable — the whitelist above accepts `.`, never `,`.
+        let text = value.toDouble().formatted(
+            .number.precision(.significantDigits(1...10)).grouping(.never)
+                .locale(Locale(identifier: "en_US_POSIX")))
         return [Provided(name: "= \(text)", subtitle: expression, icon: "equal.square", action: .copy(text))]
     }
 
@@ -523,6 +530,10 @@ final class Launcher {
         assert(calculator("chrome").isEmpty)
         assert(calculator("2+").isEmpty)
         assert(calculator("1/0").isEmpty)
+        assert(calculator("1/100000000000").first?.action == .copy("0.00000000001"))
+        assert(calculator("2024-01-15").isEmpty)  // a date, not arithmetic
+        assert(calculator("555-1234").isEmpty)  // a phone number
+        assert(calculator("555 - 1234").first?.name == "= -679")  // the space means math
         // ...and it leads the fuzzy results, which still work.
         let launcher = Launcher()
         launcher.query = "2+2"
