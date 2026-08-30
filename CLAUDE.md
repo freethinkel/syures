@@ -69,20 +69,26 @@ A `Config.Command` does exactly one of three things, and the schema enforces the
   config schema**: plugin output nests further with the same three keys, `config.schema.json`
   validates both, and `Config.selfCheck()` covers both in one test.
 
-`plugins/gh-search` is the worked example of all this — copy `plugins/` next to the config to use it.
+`plugins/gh-search` is the worked example of all this — copy `plugins/` next to the config
+(`chmod +x` survives the copy only with `cp -p`) and point `menu` at it.
 
 A `prefix` ("gh ") is the exception to fuzzy search: at the root it takes the query over and the
-rest of it is passed to the command's `run`/`menu` one-liner as a real `sh` positional parameter,
-`$1` — never spliced into the script text. The longest matching prefix wins. Still on Enter, so a
-plugin runs once per launch — see below.
+rest of it goes to the command's `run`/`menu` one-liner as a real `sh` positional parameter, `$1`,
+never spliced into the script text. The one-liner is the shell command, so a plugin script of its
+own gets the argument only if the one-liner forwards it: `./plugins/gh-search "$1"`. The longest
+matching prefix wins. With `run` that happens on Enter. With `menu` the prefix opens the level at
+once and the query *is* the argument: the script re-runs on every edit, debounced 300ms, and a
+run the query or the level has outpaced drops its output (`Launcher.generation`). That is the one
+per-keystroke path — an unprefixed `menu` still runs once, on Enter, and the query filters its
+output locally.
 
 Submenus live in `Launcher.stack`, so Esc/Backspace step back without the plugin emitting a `..`
 entry (rofi's script mode has to). A plugin argument goes inside the `menu` string itself, or comes from `prefix`, which is
 why there is no `ROFI_INFO`-style sideband. Inside a submenu an empty query lists the level in
 authored order; at the root an empty query shows nothing.
 
-`menu` scripts run on Enter, never per keystroke — that is what keeps them free of debounce,
-cancellation and races. A per-keystroke provider (calculator, clipboard) would need all three.
+Cancellation only skips a debounced run that has not started; a process already running goes to
+the end and its output is dropped.
 
 Adding user-facing customization means adding a key to `Config.Appearance`/`Config.Command`, not
 new UI.

@@ -13,6 +13,7 @@ struct LauncherView: View {
 
     private var theme: Config.Appearance { launcher.config.appearance }
 
+
     /// Gap between the card's edge and a row — and, through `contentMargins`, the gap the list
     /// keeps under the selection when arrowing past the bottom.
     private static let rowInset: CGFloat = 8
@@ -31,10 +32,6 @@ struct LauncherView: View {
             guard press.modifiers.contains(.control) else { return .ignored }
             launcher.move(press.key.character == "n" ? 1 : -1)
             return .handled
-        }
-        .onKeyPress(.delete) {  // backspace on an empty query steps back out of a submenu
-            guard launcher.query.isEmpty else { return .ignored }
-            return launcher.back() ? .handled : .ignored
         }
         .onExitCommand { if !launcher.back() { dismiss() } }
         .onChange(of: launcher.activation, initial: true) { searchFocused = true }
@@ -61,10 +58,7 @@ struct LauncherView: View {
     /// The search field floats over the list rather than sitting above it, so rows keep scrolling
     /// underneath.
     private var header: some View {
-        VStack(spacing: 0) {
-            if !launcher.path.isEmpty { breadcrumb }
-            searchField
-        }
+        searchField
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
     }
 
@@ -85,25 +79,37 @@ struct LauncherView: View {
         }
     }
 
-    /// Which submenu is open — the equivalent of rofi's prompt, without the plugin printing it.
-    private var breadcrumb: some View {
-        Text(launcher.path.joined(separator: " › "))
-            .font(theme.font(size: max(theme.rowFontSize - 2, 9)))
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 20)
-            .padding(.top, 12)
+    /// Which submenu is open — rofi's prompt, as a chip in the field so the field never moves.
+    /// Only the innermost level: the path stays in `Launcher.path`, Backspace walks it.
+    private func chip(_ level: (title: String, icon: String?)) -> some View {
+        HStack(spacing: 5) {
+            Glyph(name: level.icon ?? "chevron.right", size: theme.queryFontSize * 0.6, theme: theme)
+            Text(level.title)
+                .font(theme.font(size: theme.queryFontSize * 0.65, weight: .medium))
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background((theme.accent ?? .accentColor).opacity(0.2),
+                    in: .capsule)
     }
 
     private var searchField: some View {
         HStack(spacing: 12) {
-            if !theme.searchIcon.isEmpty {
+            if let level = launcher.current {
+                chip(level)
+            } else if !theme.searchIcon.isEmpty {
                 Glyph(name: theme.searchIcon, size: theme.queryFontSize * 0.8, theme: theme)
                     .foregroundStyle(.secondary)
             }
             TextField(theme.placeholder, text: $launcher.query)
                 .textFieldStyle(.plain)
                 .font(theme.font(size: theme.queryFontSize, weight: .light))
+            if launcher.loading {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(theme.accent)
+            }
         }
             .padding(.horizontal, 20)
             .padding(.vertical, 16)

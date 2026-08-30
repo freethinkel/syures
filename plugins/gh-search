@@ -2,9 +2,13 @@
 # Example plugin: prints a syures submenu of GitHub repos matching $1.
 #
 #   cp -r plugins ~/.config/syures/
-#   { "name": "GitHub", "prefix": "gh ", "icon": "globe", "menu": "./plugins/gh-search" }
+#   { "name": "GitHub", "prefix": "gh ", "icon": "globe", "menu": "./plugins/gh-search \"$1\"" }
 #
-# Typing "gh swift" hands "swift" to this script on Enter; its stdout is the submenu.
+# The one-liner is a shell command, so "$1" has to be passed on explicitly — syures gives it to
+# /bin/sh, not to this script.
+#
+# Typing "gh " opens the GitHub level; what you type next is "$1" and this script re-runs on
+# every edit (debounced). Its stdout is the list.
 # ponytail: gh's own --jq builds the JSON, so there is no jq/python dependency to install.
 set -e
 
@@ -12,9 +16,12 @@ command -v gh >/dev/null || {
   echo '[{ "name": "Install the gh CLI", "icon": "exclamationmark.triangle", "run": "open https://cli.github.com" }]'
   exit 0
 }
-[ -n "$1" ] || { echo '[]'; exit 0; }
+[ -n "$1" ] || {
+  echo '[]'
+  exit 0
+}
 
 gh search repos "$1" --limit 20 --json fullName,description,url --jq \
   'map({ name: .fullName, subtitle: (.description // ""), icon: "chevron.right",
-         run: ("open " + (.url | @sh)) })' \
-  || echo '[{ "name": "Search failed — is gh logged in?", "icon": "exclamationmark.triangle", "run": "gh auth login" }]'
+         run: ("open " + (.url | @sh)) })' ||
+  echo '[{ "name": "Search failed — is gh logged in?", "icon": "exclamationmark.triangle", "run": "gh auth login" }]'

@@ -47,6 +47,8 @@ final class Launcher {
     private(set) var results: [Item] = []
     /// Bumped on every activation so the view can re-focus the search field.
     private(set) var activation = 0
+    /// A `menu` script is still filling the level that is already on screen.
+    private(set) var loading = false
 
     private let apps = Launcher.installedApps().map { Entry(.app($0)) }
     private var commands: [Entry] = []
@@ -55,11 +57,25 @@ final class Launcher {
     /// `nil` means no prefix matched, so the script is run with no argument at all.
     private var argument: String?
 
+    private struct Level {
+        let title: String
+        let icon: String?
+        var entries: [Entry]
+        /// Set on a level a `prefix` opened: the query is this script's `$1`, re-run as it changes.
+        let script: String?
+    }
+
     /// One entry per submenu the user has stepped into. Empty means the root list.
-    private var stack: [(title: String, entries: [Entry])] = []
+    private var stack: [Level] = []
+    /// Bumped on every script run and level change, so a slow script cannot fill in a level the
+    /// user has left or a query they have since edited.
+    private var generation = 0
+    private var pending: Task<Void, Never>?
 
     /// Titles of the submenus currently open, outermost first.
     var path: [String] { stack.map(\.title) }
+    /// The submenu the user is in — what the field's chip shows. `nil` at the root.
+    var current: (title: String, icon: String?)? { stack.last.map { ($0.title, $0.icon) } }
 
     init() {
         commands = config.commands.map { Entry(.command($0)) }
@@ -69,6 +85,7 @@ final class Launcher {
         config = Config.load()
         commands = config.commands.map { Entry(.command($0)) }
         stack.removeAll()
+        settle()
         query = ""
         activation += 1
     }
@@ -88,15 +105,18 @@ final class Launcher {
             return false
         case .command(let command):
             if let children = command.commands {
-                push(command.name, children)
+                push(command, children, script: nil)
                 return true
             }
-            // A prefixed command is handed the rest of the query as `$1` — on Enter, so a plugin
-            // still runs once per launch and needs no debounce.
             if let script = command.menu {
-                openMenu(command.name, script, argument)
+                // Picked by name rather than typed as a prefix, a search plugin still opens as a
+                // live level: pushing it runs the script for the empty query.
+                push(command, [], script: command.prefix == nil ? nil : script)
+                if command.prefix == nil { produce(script, nil) }
                 return true
             }
+            // A prefixed `run` gets the rest of the query as `$1`; a prefixed `menu` never gets
+            // here — its level opens as soon as the prefix is typed, see `search()`.
             if let script = command.run { Launcher.shell(script, argument) }
             return false
         }
@@ -111,26 +131,54 @@ final class Launcher {
     func back() -> Bool {
         guard !stack.isEmpty else { return false }
         stack.removeLast()
+        settle()
         query = ""
         return true
     }
 
-    private func push(_ title: String, _ commands: [Config.Command]) {
-        let menu = (path + [title]).joined(separator: "/")
-        stack.append((title, commands.map { Entry(.command($0), in: menu) }))
-        query = ""  // didSet re-runs the search against the level just pushed
+    /// `query` is what the field shows on the new level; `nil` leaves it to the caller.
+    private func push(_ command: Config.Command, _ commands: [Config.Command], script: String?, query: String? = "") {
+        let menu = (path + [command.name]).joined(separator: "/")
+        stack.append(Level(title: command.name, icon: command.icon,
+                           entries: commands.map { Entry(.command($0), in: menu) }, script: script))
+        settle()
+        if let query { self.query = query }  // didSet re-runs the search against the level just pushed
     }
 
-    /// Runs the script and reads its stdout as the submenu to open.
-    private func openMenu(_ title: String, _ script: String, _ argument: String?) {
-        Task { @MainActor in
-            guard let commands = await Launcher.produce(script, argument, in: Config.directory) else { return }
-            push(title, commands)
+    /// Forgets any script still running for the level just left.
+    private func settle() {
+        generation += 1
+        pending?.cancel()
+        loading = false
+    }
+
+    /// Runs the script and fills the top level with its output — the level is already on screen
+    /// with a spinner, so a slow plugin does not look like a dead panel. `delay` debounces the
+    /// per-keystroke case; a run the query or level has outpaced drops its output.
+    private func produce(_ script: String, _ argument: String?, after delay: Duration = .zero) {
+        settle()
+        loading = true
+        let generation = self.generation
+        pending = Task { @MainActor in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            let commands = await Launcher.produce(script, argument, in: Config.directory)
+            guard generation == self.generation else { return }
+            loading = false
+            let entries = (commands ?? []).map { Entry(.command($0), in: path.joined(separator: "/")) }
+            stack[stack.count - 1].entries = entries
+            if stack[stack.count - 1].script == nil {
+                search()  // whatever the user typed meanwhile filters the fresh list
+            } else {
+                // Not `search()`: on a live level that would run the script again, forever.
+                results = entries.map(\.item)
+                selected = 0
+            }
         }
     }
 
-    // ponytail: no spinner and no cancellation — a slow script just makes the panel wait;
-    // add both once a plugin takes longer than a blink
+    // ponytail: cancellation only skips a run that has not started; one that has runs to the end
+    // and its output is dropped. Kill the process once a plugin is slow enough to be worth it.
     private static func produce(_ script: String, _ argument: String?, in directory: URL) async -> [Config.Command]? {
         await Task.detached {
             let process = Process()
@@ -161,7 +209,7 @@ final class Launcher {
 
     /// Passed to `sh` as a real positional parameter, so the query never becomes shell syntax.
     /// The `"syures"` in the middle is `$0` — `sh -c` spends it on the script name.
-    private static func shellArguments(_ script: String, _ argument: String?) -> [String] {
+    nonisolated private static func shellArguments(_ script: String, _ argument: String?) -> [String] {
         ["-c", script, "syures"] + (argument.map { [$0] } ?? [])
     }
 
@@ -195,8 +243,26 @@ final class Launcher {
 
         if stack.isEmpty, let match = Launcher.prefixed(query, in: config.commands) {
             // The prefix takes the query over: what follows it is an argument, not a search term.
+            if let script = match.command.menu {
+                // A search plugin: its level opens right away and the query becomes its `$1`.
+                // The query is not touched here, inside its own `didSet`: the field is still
+                // committing the text that got us here and would keep showing it. The prefix is
+                // stripped on the next turn of the run loop, and that edit runs the script.
+                push(match.command, [], script: script, query: nil)
+                results = []
+                let argument = match.argument
+                DispatchQueue.main.async { self.query = argument }
+                return
+            }
             argument = match.argument
             results = [.command(match.command)]
+            return
+        }
+
+        if let level = stack.last, let script = level.script {
+            // The script does the filtering — every run is for the query as typed now.
+            results = level.entries.map(\.item)
+            produce(script, query, after: .milliseconds(300))
             return
         }
 

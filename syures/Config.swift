@@ -79,7 +79,7 @@ struct Config: Decodable {
           { "name": "Style", "commands": [{ "name": "Dark", "run": "dark-mode on" }] },
           { "name": "Projects", "menu": "./plugins/projects ~" },
           { "name": "Google", "prefix": "g", "run": "open https://google.com" },
-          { "name": "GitHub", "prefix": "gh ", "menu": "./plugins/gh-search" }
+          { "name": "GitHub", "prefix": "gh ", "menu": "./plugins/gh-search \\"$1\\"" }
         ]
         """
         let decoder = JSONDecoder()
@@ -310,6 +310,8 @@ private extension Config {
         //   { "name": "Dark", "run": "dark-mode on" },
         // ]},
         // { "name": "Projects", "menu": "./plugins/projects ~" },  // submenu printed by a script
+        // { "name": "GitHub", "prefix": "gh ", "icon": "globe",   // "gh swift" hands "swift" to $1
+        //   "menu": "./plugins/gh-search \\"$1\\"" },
       ],
     }
     """
@@ -431,7 +433,7 @@ private extension Config {
             },
             "prefix": {
               "type": "string",
-              "description": "Typing this at the root hands the rest of the query to run / menu as $1, on Enter. Example: prefix 'gh ' turns 'gh swift' into ./plugins/gh-search swift. The longest matching prefix wins."
+              "description": "Typing this at the root hands the rest of the query to run / menu as the shell parameter $1, on Enter — a script of your own gets it only if the one-liner passes it on: './plugins/gh-search \\"$1\\"'. The longest matching prefix wins."
             }
           },
           "dependentSchemas": {
