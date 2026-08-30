@@ -69,8 +69,12 @@ A `Config.Command` does exactly one of three things, and the schema enforces the
   config schema**: plugin output nests further with the same three keys, `config.schema.json`
   validates both, and `Config.selfCheck()` covers both in one test.
 
+A `prefix` ("gh ") is the exception to fuzzy search: at the root it takes the query over and the
+rest of it is shell-quoted onto the command's `run`/`menu` one-liner as `$1`. Still on Enter, so a
+plugin runs once per launch — see below.
+
 Submenus live in `Launcher.stack`, so Esc/Backspace step back without the plugin emitting a `..`
-entry (rofi's script mode has to). A plugin argument goes inside the `menu` string itself, which is
+entry (rofi's script mode has to). A plugin argument goes inside the `menu` string itself, or comes from `prefix`, which is
 why there is no `ROFI_INFO`-style sideband. Inside a submenu an empty query lists the level in
 authored order; at the root an empty query shows nothing.
 

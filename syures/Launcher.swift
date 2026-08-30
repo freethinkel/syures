@@ -51,6 +51,9 @@ final class Launcher {
     private let apps = Launcher.installedApps().map { Entry(.app($0)) }
     private var commands: [Entry] = []
 
+    /// Text after a matched `prefix` — the argument the command's script gets on Enter.
+    private var argument = ""
+
     /// One entry per submenu the user has stepped into. Empty means the root list.
     private var stack: [(title: String, entries: [Entry])] = []
 
@@ -87,11 +90,14 @@ final class Launcher {
                 push(command.name, children)
                 return true
             }
+            // A prefixed command is handed the rest of the query — on Enter, so a plugin still
+            // runs once per launch and needs no debounce.
+            let suffix = command.prefix == nil ? "" : " " + Launcher.quoted(argument)
             if let script = command.menu {
-                openMenu(command.name, script)
+                openMenu(command.name, script + suffix)
                 return true
             }
-            if let script = command.run { Launcher.shell(script) }
+            if let script = command.run { Launcher.shell(script + suffix) }
             return false
         }
     }
@@ -153,6 +159,11 @@ final class Launcher {
         }.value
     }
 
+    /// Single-quoted for `/bin/sh`, so spaces and `$` in the query stay one literal argument.
+    private static func quoted(_ text: String) -> String {
+        "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
     private static func shell(_ script: String) {
         let process = Process()
         process.executableURL = URL(filePath: "/bin/sh")
@@ -162,9 +173,28 @@ final class Launcher {
         try? process.run()
     }
 
+    /// The root command whose `prefix` starts `query`, and the rest of the query — its argument.
+    static func prefixed(_ query: String, in commands: [Config.Command]) -> (command: Config.Command, argument: String)? {
+        for command in commands {
+            guard let prefix = command.prefix, !prefix.isEmpty,
+                  let match = query.range(of: prefix, options: [.caseInsensitive, .anchored])
+            else { continue }
+            return (command, String(query[match.upperBound...]))
+        }
+        return nil
+    }
+
     private func search() {
         selected = 0
+        argument = ""
         let needle = Array(query.lowercased().utf8)
+
+        if stack.isEmpty, let match = Launcher.prefixed(query, in: config.commands) {
+            // The prefix takes the query over: what follows it is an argument, not a search term.
+            argument = match.argument
+            results = [.command(match.command)]
+            return
+        }
 
         if let level = stack.last {
             // A menu is authored, so an empty query keeps its order instead of showing nothing.
