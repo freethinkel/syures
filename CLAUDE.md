@@ -69,6 +69,8 @@ A `Config.Command` does exactly one of three things, and the schema enforces the
   config schema**: plugin output nests further with the same three keys, `config.schema.json`
   validates both, and `Config.selfCheck()` covers both in one test.
 
+`plugins/gh-search` is the worked example of all this — copy `plugins/` next to the config to use it.
+
 A `prefix` ("gh ") is the exception to fuzzy search: at the root it takes the query over and the
 rest of it is shell-quoted onto the command's `run`/`menu` one-liner as `$1`. Still on Enter, so a
 plugin runs once per launch — see below.

@@ -1,0 +1,20 @@
+#!/bin/sh
+# Example plugin: prints a syures submenu of GitHub repos matching $1.
+#
+#   cp -r plugins ~/.config/syures/
+#   { "name": "GitHub", "prefix": "gh ", "icon": "globe", "menu": "./plugins/gh-search" }
+#
+# Typing "gh swift" hands "swift" to this script on Enter; its stdout is the submenu.
+# ponytail: gh's own --jq builds the JSON, so there is no jq/python dependency to install.
+set -e
+
+command -v gh >/dev/null || {
+  echo '[{ "name": "Install the gh CLI", "icon": "exclamationmark.triangle", "run": "open https://cli.github.com" }]'
+  exit 0
+}
+[ -n "$1" ] || { echo '[]'; exit 0; }
+
+gh search repos "$1" --limit 20 --json fullName,description,url --jq \
+  'map({ name: .fullName, subtitle: (.description // ""), icon: "chevron.right",
+         run: ("open " + (.url | @sh)) })' \
+  || echo '[{ "name": "Search failed — is gh logged in?", "icon": "exclamationmark.triangle", "run": "gh auth login" }]'
