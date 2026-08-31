@@ -1,5 +1,4 @@
 import AppKit
-import JavaScriptCore
 
 @Observable
 final class Launcher {
@@ -319,43 +318,6 @@ final class Launcher {
         results = provided + ranked(needle, in: [commands, sources])
     }
 
-    // MARK: - Providers
-
-    // ponytail: one array, no config — registration is appending to it. `deferred` is declared
-    // but unused: `menu` plugins still run through `produce`/`stack`, see ResultProvider.swift.
-    static let providers: [ResultProvider] = [Calculator(), AppsProvider()]
-
-    /// ponytail: JavaScriptCore rather than a parser or `NSExpression` — a half-typed expression
-    /// returns nil here, where `NSExpression(format:)` raises an ObjC exception Swift cannot catch.
-    /// `unsafe` the way `iconCache` is: providers are pure and synchronous, so this is touched
-    /// from `search()` on the main thread and nowhere else.
-    nonisolated(unsafe) private static let js: JSContext = {
-        let context = JSContext()!
-        context.exceptionHandler = { _, _ in }  // "2+" is a work in progress, not an error
-        return context
-    }()
-
-    /// `2.5*2` -> `= 5`, copied on Enter.
-    nonisolated static func calculator(_ query: String) -> [Provided] {
-        let expression = query.trimmingCharacters(in: .whitespaces)
-        // The whitelist is what keeps `js` an arithmetic evaluator instead of an eval box.
-        guard expression.contains(where: "+-*/%".contains),
-            expression.allSatisfy({ $0.isNumber || "+-*/%(). ".contains($0) }),
-            // ponytail: `2024-01-15` is a date and `555-1234` a phone, not subtraction — when `-`
-            // is the only operator, a space is what says "I meant math".
-            expression.contains(where: "+*/%".contains) || expression.contains(" "),
-            let value = js.evaluateScript(expression), value.isNumber,
-            value.toDouble().isFinite
-        else { return [] }
-        // Significant digits, not fraction digits, or `1/100000000000` copies "0"; the fixed
-        // locale keeps the copied text re-typable — the whitelist above accepts `.`, never `,`.
-        let text = value.toDouble().formatted(
-            .number.precision(.significantDigits(1...10)).grouping(.never)
-                .locale(Locale(identifier: "en_US_POSIX")))
-        return [Provided(name: "= \(text)", subtitle: expression, icon: .symbol("equal.square"),
-                         action: .copy(text))]
-    }
-
     private func ranked(_ needle: [UInt8], in groups: [[Entry]]) -> [Item] {
         var scored: [(entry: Entry, score: Int, frecency: Double)] = []
         let now = Date().timeIntervalSinceReferenceDate
@@ -528,21 +490,10 @@ final class Launcher {
         // hold whatever the launch history is.
         assert(frecency(count: 3, age: 0) > frecency(count: 1, age: 0))
         assert(frecency(count: 5, age: 90 * 86400) < frecency(count: 1, age: 0))
-        // Providers: a result on every keystroke, nothing for a query that is not arithmetic.
-        assert(calculator("2.5*2").first?.name == "= 5")
-        assert(calculator("5/2").first?.action == .copy("2.5"))
-        assert(calculator("0.1+0.2").first?.name == "= 0.3")
-        assert(calculator("chrome").isEmpty)
-        assert(calculator("2+").isEmpty)
-        assert(calculator("1/0").isEmpty)
-        assert(calculator("1/100000000000").first?.action == .copy("0.00000000001"))
-        assert(calculator("2024-01-15").isEmpty)  // a date, not arithmetic
-        assert(calculator("555-1234").isEmpty)  // a phone number
-        assert(calculator("555 - 1234").first?.name == "= -679")  // the space means math
         // ...and it is pinned above the ranked list, which still works.
         let launcher = Launcher()
         launcher.query = "2+2"
-        assert(launcher.results.first == .provided(calculator("2+2")[0]))
+        assert(launcher.results.first == .provided(Calculator.evaluate("2+2")!))
         // Apps come from a provider too, but as `entries()`: query-independent, so they rank
         // rather than pin. `Calculator.app` ships with macOS and is in `searchPaths`.
         assert(AppsProvider().entries().contains { $0.name == "Calculator" })

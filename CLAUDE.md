@@ -93,8 +93,8 @@ the end and its output is dropped.
 A `menu` needs a `prefix` to recompute per keystroke, and pays for it with debounce, cancellation
 and generation checks.
 
-Everything that fills the list is a `ResultProvider` (ResultProvider.swift), and the protocol has
-three methods because there are three costs:
+Everything that fills the list is a `ResultProvider` (`syures/Providers/`, one file per
+provider), and the protocol has three methods because there are three costs:
 
 - `entries()` — a list that does not depend on the query, asked once (`AppsProvider`). It goes
   through `ranked`, so it competes on fuzzy score and then on frecency.
@@ -104,8 +104,9 @@ three methods because there are three costs:
   through `produce`/`stack`.
 
 A provider implements the one it needs; the rest default to empty. Registration is one array,
-`Launcher.providers` — no config, no plugin loading, because a Swift class cannot be added without
-recompiling. That is what `menu` scripts are for.
+`Launcher.providers` in ResultProvider.swift — no config, no plugin loading, because a Swift type
+cannot be added without recompiling. That is what `menu` scripts are for. Adding a provider means
+adding a file there and a word to that array.
 
 A provider's result is a `Provided`: `Action` (`copy`/`run`/`open`) and `Icon` (`symbol`/`file`)
 are data, not closures, which keeps it `Hashable` and the provider pure. `id` is its frecency key
