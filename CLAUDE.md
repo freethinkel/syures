@@ -91,13 +91,26 @@ Cancellation only skips a debounced run that has not started; a process already 
 the end and its output is dropped.
 
 A `menu` needs a `prefix` to recompute per keystroke, and pays for it with debounce, cancellation
-and generation checks. What must recompute on every keystroke without a script (calculator,
-converter) is an *internal provider* instead: a synchronous pure `(String) -> [Provided]` in
-`Launcher.providers`, in-process, so none of the three is needed. Its result carries an `Action`
-(`copy`/`run`) as data, not a closure, which keeps `Provided` `Hashable` and the provider pure.
-Providers run only at the root and only when no prefix matched; their results come first and skip
-both fuzzy ranking and frecency. Registration is that one array — no config, no protocol; async
-providers (file search) are deliberately out of the contract.
+and generation checks.
+
+Everything that fills the list is a `ResultProvider` (ResultProvider.swift), and the protocol has
+three methods because there are three costs:
+
+- `entries()` — a list that does not depend on the query, asked once (`AppsProvider`). It goes
+  through `ranked`, so it competes on fuzzy score and then on frecency.
+- `immediate(_:)` — computed from the query in the same frame (`Calculator`). Pinned above the
+  ranked list, skipping both ranking and frecency.
+- `deferred(_:)` — a subprocess or the network. Declared, not yet wired: `menu` plugins still run
+  through `produce`/`stack`.
+
+A provider implements the one it needs; the rest default to empty. Registration is one array,
+`Launcher.providers` — no config, no plugin loading, because a Swift class cannot be added without
+recompiling. That is what `menu` scripts are for.
+
+A provider's result is a `Provided`: `Action` (`copy`/`run`/`open`) and `Icon` (`symbol`/`file`)
+are data, not closures, which keeps it `Hashable` and the provider pure. `id` is its frecency key
+— `nil` for a calculation, `"app:<path>"` for an app, so launch counts survive. `Item` therefore
+has only two cases: `.command`, which can open a submenu, and `.provided`, which cannot.
 
 Adding user-facing customization means adding a key to `Config.Appearance`/`Config.Command`, not
 new UI.

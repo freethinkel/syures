@@ -4,13 +4,12 @@ import JavaScriptCore
 @Observable
 final class Launcher {
     enum Item: Hashable {
-        case app(URL)
+        /// A command written in the config: it can open a submenu, so it is not a `Provided`.
         case command(Config.Command)
         case provided(Provided)
 
         var name: String {
             switch self {
-            case .app(let url): url.deletingPathExtension().lastPathComponent
             case .command(let command): command.name
             case .provided(let result): result.name
             }
@@ -18,30 +17,36 @@ final class Launcher {
 
         var subtitle: String? {
             switch self {
-            case .app: nil
             case .command(let command): command.subtitle
             case .provided(let result): result.subtitle
             }
         }
     }
 
-    /// A result computed from the query itself. Its action is data, not a closure, so a provider
-    /// stays a pure function and `Provided` stays `Hashable` — it is its own id in the list.
+    /// Anything a `ResultProvider` puts in the list. Its action is data, not a closure, so a
+    /// provider stays a pure function and `Provided` stays `Hashable` — it is its own list id.
     struct Provided: Hashable {
         let name: String
-        let subtitle: String?
-        let icon: String?
+        var subtitle: String? = nil
+        var icon: Icon? = nil
         let action: Action
+        /// Frecency key. `nil` for a result recomputed from the query — a calculation has no
+        /// history worth keeping.
+        var id: String? = nil
+
+        enum Icon: Hashable {
+            /// An SF Symbol, an emoji, or a Nerd Font glyph.
+            case symbol(String)
+            /// The file's own icon, the way an app is drawn.
+            case file(URL)
+        }
 
         enum Action: Hashable {
             case copy(String)
             case run(String)
+            case open(URL)
         }
     }
-
-    /// Synchronous and pure: it runs on every keystroke, which is the whole point — a `menu`
-    /// plugin cannot, being a `fork`/`exec`.
-    typealias Provider = (String) -> [Provided]
 
     /// A searchable item with its match key precomputed, so the keystroke path allocates nothing.
     private struct Entry {
@@ -72,7 +77,8 @@ final class Launcher {
     /// A `menu` script is still filling the level that is already on screen.
     private(set) var loading = false
 
-    private let apps = Launcher.installedApps().map { Entry(.app($0)) }
+    /// Query-independent provider results, keyed once — the keystroke path allocates nothing.
+    private let sources = Launcher.providers.flatMap { $0.entries() }.map { Entry(.provided($0)) }
     private var commands: [Entry] = []
 
     /// Text after a matched `prefix` — the argument the command's script gets on Enter.
@@ -120,23 +126,19 @@ final class Launcher {
     /// `true` means the item opened a submenu, so the panel should stay up.
     @discardableResult
     func run(_ item: Item) -> Bool {
-        if case .provided(let result) = item {
+        remember(Launcher.frecencyID(item, in: path.joined(separator: "/")))
+        switch item {
+        case .provided(let result):
             switch result.action {
             case .copy(let text):
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(text, forType: .string)
             case .run(let script):
                 Launcher.shell(script, nil)
+            case .open(let url):
+                NSWorkspace.shared.open(url)
             }
             return false
-        }
-        remember(Launcher.frecencyID(item, in: path.joined(separator: "/")))
-        switch item {
-        case .app(let url):
-            NSWorkspace.shared.openApplication(at: url, configuration: .init())
-            return false
-        case .provided:
-            return false  // handled above
         case .command(let command):
             if let children = command.commands {
                 push(command, children, script: nil)
@@ -213,7 +215,7 @@ final class Launcher {
 
     // ponytail: cancellation only skips a run that has not started; one that has runs to the end
     // and its output is dropped. Kill the process once a plugin is slow enough to be worth it.
-    private static func produce(_ script: String, _ argument: String?, in directory: URL) async -> [Config.Command]? {
+    static func produce(_ script: String, _ argument: String?, in directory: URL) async -> [Config.Command]? {
         await Task.detached {
             let process = Process()
             process.executableURL = URL(filePath: "/bin/sh")
@@ -311,15 +313,17 @@ final class Launcher {
             results = []
             return
         }
-        // Providers come first and unranked, the way Raycast puts a calculation above the list.
-        let provided = Launcher.providers.flatMap { $0(query) }.map(Item.provided)
-        results = provided + ranked(needle, in: [commands, apps])
+        // Pinned provider results come first and unranked, the way Raycast puts a calculation
+        // above the list; `sources` (the apps) compete with the config commands below them.
+        let provided = Launcher.providers.flatMap { $0.immediate(query) }.map(Item.provided)
+        results = provided + ranked(needle, in: [commands, sources])
     }
 
     // MARK: - Providers
 
-    // ponytail: one array, no protocol and no config — order is the array's, revisit at provider #2
-    private static let providers: [Provider] = [calculator]
+    // ponytail: one array, no config — registration is appending to it. `deferred` is declared
+    // but unused: `menu` plugins still run through `produce`/`stack`, see ResultProvider.swift.
+    static let providers: [ResultProvider] = [Calculator(), AppsProvider()]
 
     /// ponytail: JavaScriptCore rather than a parser or `NSExpression` — a half-typed expression
     /// returns nil here, where `NSExpression(format:)` raises an ObjC exception Swift cannot catch.
@@ -348,7 +352,8 @@ final class Launcher {
         let text = value.toDouble().formatted(
             .number.precision(.significantDigits(1...10)).grouping(.never)
                 .locale(Locale(identifier: "en_US_POSIX")))
-        return [Provided(name: "= \(text)", subtitle: expression, icon: "equal.square", action: .copy(text))]
+        return [Provided(name: "= \(text)", subtitle: expression, icon: .symbol("equal.square"),
+                         action: .copy(text))]
     }
 
     private func ranked(_ needle: [UInt8], in groups: [[Entry]]) -> [Item] {
@@ -379,9 +384,8 @@ final class Launcher {
     /// and neither does a command with its namesake one submenu over.
     private static func frecencyID(_ item: Item, in menu: String) -> String {
         switch item {
-        case .app(let url): "app:\(url.path)"
         case .command(let command): "cmd:\(menu)/\(command.name)"
-        case .provided: ""  // provider results are recomputed every keystroke, never remembered
+        case .provided(let result): result.id ?? ""  // no id: nothing worth remembering
         }
     }
 
@@ -391,6 +395,7 @@ final class Launcher {
         UserDefaults.standard.dictionary(forKey: Launcher.frecencyKey) as? [String: [Double]] ?? [:]
 
     private func remember(_ id: String) {
+        guard !id.isEmpty else { return }  // a calculation, not something with a history
         let count = records[id]?.first ?? 0
         records[id] = [count + 1, Date().timeIntervalSinceReferenceDate]
         UserDefaults.standard.set(records, forKey: Launcher.frecencyKey)
@@ -534,12 +539,15 @@ final class Launcher {
         assert(calculator("2024-01-15").isEmpty)  // a date, not arithmetic
         assert(calculator("555-1234").isEmpty)  // a phone number
         assert(calculator("555 - 1234").first?.name == "= -679")  // the space means math
-        // ...and it leads the fuzzy results, which still work.
+        // ...and it is pinned above the ranked list, which still works.
         let launcher = Launcher()
         launcher.query = "2+2"
         assert(launcher.results.first == .provided(calculator("2+2")[0]))
-        launcher.query = "chrome"
-        assert(!launcher.results.contains { if case .provided = $0 { true } else { false } })
+        // Apps come from a provider too, but as `entries()`: query-independent, so they rank
+        // rather than pin. `Calculator.app` ships with macOS and is in `searchPaths`.
+        assert(AppsProvider().entries().contains { $0.name == "Calculator" })
+        launcher.query = "calculator"
+        assert(launcher.results.contains { $0.name == "Calculator" })
     }
     #endif
 
@@ -566,20 +574,4 @@ final class Launcher {
         return exists
     }
 
-    private static let searchPaths = [
-        "/Applications", "/Applications/Utilities",
-        "/System/Applications", "/System/Applications/Utilities",
-        NSHomeDirectory() + "/Applications",
-    ]
-
-    // ponytail: flat scan once at launch; add an FSEvents watcher if apps get installed mid-session
-    private static func installedApps() -> [URL] {
-        searchPaths
-            .flatMap { path -> [URL] in
-                let contents = try? FileManager.default.contentsOfDirectory(
-                    at: URL(filePath: path), includingPropertiesForKeys: nil)
-                return contents ?? []
-            }
-            .filter { $0.pathExtension == "app" }
-    }
 }

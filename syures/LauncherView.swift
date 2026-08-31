@@ -235,13 +235,18 @@ private struct ResultRow: View {
     @ViewBuilder
     private var icon: some View {
         switch item {
-        case .app(let url):
-            Image(nsImage: Launcher.icon(for: url.path))
-                .resizable()
         case .command(let command):
             Glyph(name: command.icon ?? "terminal", size: 18, theme: theme)
         case .provided(let result):
-            Glyph(name: result.icon ?? "sparkles", size: 18, theme: theme)
+            switch result.icon {
+            case .file(let url):
+                Image(nsImage: Launcher.icon(for: url.path))
+                    .resizable()
+            case .symbol(let name):
+                Glyph(name: name, size: 18, theme: theme)
+            case nil:
+                Glyph(name: "sparkles", size: 18, theme: theme)
+            }
         }
     }
 }
