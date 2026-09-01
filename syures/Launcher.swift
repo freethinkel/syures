@@ -8,7 +8,7 @@ final class Launcher {
     var selected = 0
 
     private(set) var config = Config.load()
-    private(set) var results: [Item] = []
+    private(set) var results: [Entry] = []
     /// Bumped on every activation so the view can re-focus the search field.
     private(set) var activation = 0
     /// A `menu` script is still filling the level that is already on screen.
@@ -23,7 +23,7 @@ final class Launcher {
     private struct Level {
         let title: String
         let icon: String?
-        var entries: [Entry]
+        var entries: [CommandEntry]
         /// Set on a level a `prefix` opened: the query is this script's `$1`, re-run as it changes.
         let script: String?
     }
@@ -58,31 +58,31 @@ final class Launcher {
         selected = min(max(0, selected + delta), results.count - 1)
     }
 
-    /// `true` means the item opened a submenu, so the panel should stay up.
+    /// `true` means the row opened a submenu, so the panel should stay up.
     @discardableResult
-    func run(_ item: Item) -> Bool {
-        remember(Launcher.frecencyID(item, in: path.joined(separator: "/")))
-        switch item {
-        case .provided(let result):
-            result.action.perform()
-            return false
-        case .command(let command):
-            if let children = command.commands {
-                push(command, children, script: nil)
-                return true
-            }
-            if let script = command.menu {
-                // Picked by name rather than typed as a prefix, a search plugin still opens as a
-                // live level: pushing it runs the script for the empty query.
-                push(command, [], script: command.prefix == nil ? nil : script)
-                if command.prefix == nil { produce(script, nil) }
-                return true
-            }
-            // A prefixed `run` gets the rest of the query as `$1`; a prefixed `menu` never gets
-            // here — its level opens as soon as the prefix is typed, see `search()`.
-            if let script = command.run { Launcher.Provided.Action.run(script).perform(argument) }
-            return false
+    func run(_ entry: Entry) -> Bool {
+        remember(entry.frecencyID)
+        return entry.run(in: self)
+    }
+
+    /// What a `CommandEntry` does when it is picked: a submenu is a state the card goes into,
+    /// so only the launcher can carry it out.
+    func open(_ command: Config.Command) -> Bool {
+        if let children = command.commands {
+            push(command, children, script: nil)
+            return true
         }
+        if let script = command.menu {
+            // Picked by name rather than typed as a prefix, a search plugin still opens as a
+            // live level: pushing it runs the script for the empty query.
+            push(command, [], script: command.prefix == nil ? nil : script)
+            if command.prefix == nil { produce(script, nil) }
+            return true
+        }
+        // A prefixed `run` gets the rest of the query as `$1`; a prefixed `menu` never gets
+        // here — its level opens as soon as the prefix is typed, see `search()`.
+        if let script = command.run { Launcher.shell(script, argument) }
+        return false
     }
 
     func runSelected() -> Bool {
@@ -103,7 +103,7 @@ final class Launcher {
     private func push(_ command: Config.Command, _ commands: [Config.Command], script: String?, query: String? = "") {
         let menu = (path + [command.name]).joined(separator: "/")
         stack.append(Level(title: command.name, icon: command.icon,
-                           entries: commands.map { Entry(.command($0), in: menu) }, script: script))
+                           entries: commands.map { CommandEntry($0, in: menu) }, script: script))
         settle()
         if let query { self.query = query }  // didSet re-runs the search against the level just pushed
     }
@@ -128,13 +128,13 @@ final class Launcher {
             let commands = await Launcher.produce(script, argument, in: Config.directory)
             guard generation == self.generation else { return }
             loading = false
-            let entries = (commands ?? []).map { Entry(.command($0), in: path.joined(separator: "/")) }
+            let entries = (commands ?? []).map { CommandEntry($0, in: path.joined(separator: "/")) }
             stack[stack.count - 1].entries = entries
             if stack[stack.count - 1].script == nil {
                 search()  // whatever the user typed meanwhile filters the fresh list
             } else {
                 // Not `search()`: on a live level that would run the script again, forever.
-                results = entries.map(\.item)
+                results = entries
                 selected = 0
             }
         }
@@ -146,7 +146,7 @@ final class Launcher {
         await Task.detached {
             let process = Process()
             process.executableURL = URL(filePath: "/bin/sh")
-            process.arguments = Provided.Action.shellArguments(script, argument)
+            process.arguments = shellArguments(script, argument)
             process.currentDirectoryURL = directory
             let pipe = Pipe()
             process.standardOutput = pipe
@@ -170,6 +170,22 @@ final class Launcher {
         }.value
     }
 
+
+    /// Spawns and forgets: waiting would freeze the card until the process is done.
+    private static func shell(_ script: String, _ argument: String?) {
+        let process = Process()
+        process.executableURL = URL(filePath: "/bin/sh")
+        process.arguments = shellArguments(script, argument)
+        // `./script.sh` in a command means what it looks like: next to the config.
+        process.currentDirectoryURL = Config.directory
+        try? process.run()
+    }
+
+    /// Passed to `sh` as a real positional parameter, so the query never becomes shell syntax.
+    /// The `"syures"` in the middle is `$0` — `sh -c` spends it on the script name.
+    nonisolated private static func shellArguments(_ script: String, _ argument: String?) -> [String] {
+        ["-c", script, "syures"] + (argument.map { [$0] } ?? [])
+    }
 
     /// The root command whose `prefix` starts `query`, and the rest of the query — its argument.
     /// The longest prefix wins, so a `"g"` entry does not shadow a `"gh "` one written after it.
@@ -203,53 +219,53 @@ final class Launcher {
                 return
             }
             argument = match.argument
-            results = [.command(match.command)]
+            results = [CommandEntry(match.command)]
             return
         }
 
         if let level = stack.last, let script = level.script {
             // The script does the filtering — every run is for the query as typed now.
-            results = level.entries.map(\.item)
+            results = level.entries
             produce(script, query, after: .milliseconds(300))
             return
         }
 
         if let level = stack.last {
             // A menu is authored, so an empty query keeps its order instead of showing nothing.
-            results = query.isEmpty
-                ? level.entries.map(\.item)
-                : merge([Entry.search(level.entries, query)])
+            results = query.isEmpty ? level.entries : merge([level.entries], for: query)
             return
         }
         guard !query.isEmpty else {
             results = []
             return
         }
-        results = merge(providers.map { $0.search(query) })
+        results = merge(providers.map { $0.search(query) }, for: query)
     }
 
     /// The rows for a query in the order they are shown: score first, then frecency, then the
-    /// provider's place in the registry. `groups` is one array per provider, so that place is
+    /// provider's place in the registry — `groups` is one array per provider, so that place is
     /// just the index.
-    private func merge(_ groups: [[Match]]) -> [Item] {
-        var found = groups.enumerated().flatMap { rank, matches in matches.map { (rank, $0) } }
+    private func merge(_ groups: [[Entry]], for query: String) -> [Entry] {
+        let needle = Array(query.lowercased().utf8)
+        var scored = groups.enumerated().flatMap { rank, entries in
+            entries.compactMap { entry in entry.score(needle).map { (rank, entry, $0) } }
+        }
         // An answer to the query cancels everything that merely resembles it.
-        if found.contains(where: { $0.1.exclusive }) {
-            found.removeAll { !$0.1.exclusive }
+        if scored.contains(where: { $0.1.exclusive }) {
+            scored.removeAll { !$0.1.exclusive }
         }
         let now = Date().timeIntervalSinceReferenceDate
         // Frecency only orders equally good matches, so a better match always wins — a weighted
         // bonus cannot do that, since the gaps it would have to stay under are as small as 2.
-        let scored = found.map {
-            ($0.0, $0.1, frecency(for: Launcher.frecencyID($0.1.item, in: path.joined(separator: "/")),
-                                  now: now))
-        }
-        return scored.sorted {
-            if $0.1.score != $1.1.score { return $0.1.score > $1.1.score }
-            if $0.2 != $1.2 { return $0.2 > $1.2 }
-            if $0.0 != $1.0 { return $0.0 < $1.0 }
-            return $0.1.item.name < $1.1.item.name
-        }.map(\.1.item)
+        return scored
+            .map { ($0.0, $0.1, $0.2, frecency(for: $0.1.frecencyID, now: now)) }
+            .sorted {
+                if $0.2 != $1.2 { return $0.2 > $1.2 }
+                if $0.3 != $1.3 { return $0.3 > $1.3 }
+                if $0.0 != $1.0 { return $0.0 < $1.0 }
+                return $0.1.name < $1.1.name
+            }
+            .map(\.1)
     }
 
     // MARK: - Frecency
@@ -258,13 +274,6 @@ final class Launcher {
 
     /// Kind- and menu-qualified, so an app never shares a record with a command of the same name,
     /// and neither does a command with its namesake one submenu over.
-    static func frecencyID(_ item: Item, in menu: String) -> String {
-        switch item {
-        case .command(let command): "cmd:\(menu)/\(command.name)"
-        case .provided(let result): result.id ?? ""  // no id: nothing worth remembering
-        }
-    }
-
     /// `frecencyID -> [launch count, last run]`, so a familiar item leads its equally good rivals.
     /// ponytail: whole dict rewritten on every launch; it is a handful of names, not a database
     private var records: [String: [Double]] =
@@ -400,17 +409,17 @@ final class Launcher {
         assert(score("am", "Amphetamine") > score("am", "Activity Monitor"))  // contiguous wins
         assert(score("chr", "Google Chrome") > score("chr", "Chrome Remote Desktop Host Uninstaller"))
         // Frecency: more launches rank higher, and an old burst decays below a fresh single run.
-        // It never outranks a better match — `ranked` sorts by score first, so the asserts above
+        // It never outranks a better match — `merge` sorts by score first, so the asserts above
         // hold whatever the launch history is.
         assert(frecency(count: 3, age: 0) > frecency(count: 1, age: 0))
         assert(frecency(count: 5, age: 90 * 86400) < frecency(count: 1, age: 0))
         // An answer takes the whole list: "2+2" shows the sum, not apps that resemble it.
         let launcher = Launcher()
         launcher.query = "2+2"
-        assert(launcher.results == [.provided(Calculator.evaluate("2+2")!)])
+        assert(launcher.results.map(\.name) == ["= 4"])
         // Apps are a provider too, and theirs is an ordinary match, so it ranks with the rest.
         // `Calculator.app` ships with macOS and is in `searchPaths`.
-        assert(AppsProvider.installed().contains { $0.name == "Calculator" })
+        assert(AppsProvider.installed().contains { $0.lastPathComponent == "Calculator.app" })
         launcher.query = "calculator"
         assert(launcher.results.contains { $0.name == "Calculator" })
     }

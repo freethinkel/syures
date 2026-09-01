@@ -93,30 +93,27 @@ the end and its output is dropped.
 A `menu` needs a `prefix` to recompute per keystroke, and pays for it with debounce, cancellation
 and generation checks.
 
-Everything that fills the list is a `Provider` (`syures/Providers/`, one file each). The protocol
-is one method — `search(_:) -> [Match]` — and the scoring lives inside the provider rather than
-outside it, for the sake of sources whose answer is in no list at all: a calculator reads `2+2`,
-and "4" would never match the query it came from. `Entry` is the shared match key (name lowercased
-to UTF-8 plus positional bonuses) and `Entry.search` the shape every list-backed provider uses, so
-all their scores stay comparable. The list of providers is rebuilt on every activation, so a
-provider reads the config in its `init` and needs no reload of its own — free, because the one
-source that touches the disk scans once for the life of the process.
+Everything that fills the list is a `Provider` (`syures/Providers/`, one file each), and the
+protocol is one method — `search(_:) -> [Entry]`. It takes the query because a source's answer
+need not be in any list: a calculator reads `2+2` and builds the row for it, while a list-backed
+source ignores the query here and lets the rows do the matching.
 
-A `Match` is an item, a score, and `exclusive` — an answer to the query rather than a match for
-it. One exclusive match in the list and only those are shown, which is how `2+2` shows the sum
-instead of apps whose names resemble it. `merge` then orders by score, frecency, and the
-provider's place in `Launcher.allProviders` — that array is the registry, and adding a provider is
-adding a file next to it plus a word in it. A Swift type cannot be registered at runtime, which is
-what `menu` scripts are for.
+`Entry` is that row, and it is a class the providers subclass: `AppEntry`, `CommandEntry`,
+`AnswerEntry`. It knows its own `name`, `subtitle`, `icon`, `frecencyID`, how well it fits a query
+(`score`, one matcher for all so their numbers stay comparable, built once into a UTF-8 match key)
+and what to do when picked (`run(in:)` — the pasteboard, `NSWorkspace`, or a submenu). So there is
+no enum of result kinds and `Launcher` never switches over what a row happens to be: it scores,
+sorts, and calls `run`.
 
-`AppsProvider` and `Calculator` yield `.provided` items. What a result is and what happens when it
-is picked live together in `Providers/Item.swift`: `Action` (`copy`/`run`/`open`) and `Icon`
-(`symbol`/`file`) are data, not closures, which keeps `Provided` `Hashable` and the provider pure,
-and `id` is its frecency key (`nil` for a calculation, `"app:<path>"` for an app). `Action.perform`
-is the one place a result is carried out — the pasteboard, `NSWorkspace`, and the only `/bin/sh`
-spawn that is not a `menu` reading stdout — so `Launcher` picks items rather than executing them. `CommandsProvider`
-yields `.command` items instead, because a command can carry `commands` or `menu`, and opening a
-submenu is a state the card goes into, which a `Provided` cannot express.
+`exclusive` is an answer to the query rather than a match for it — one in the list and only those
+are shown, which is how `2+2` shows the sum instead of apps whose names resemble it. `AnswerEntry`
+also overrides `score` to a constant, since the matcher would never find "4" in the `2+2` it came
+from. `merge` orders by score, then frecency, then the provider's place in `Launcher.allProviders`
+— that array is the registry, and adding a provider is adding a file next to it plus a word in it.
+A Swift type cannot be registered at runtime, which is what `menu` scripts are for.
+
+Opening a submenu is the exception to "the entry does the work": it is a state the card goes into,
+so `CommandEntry.run` hands back to `Launcher.open`, which owns the stack.
 
 `syures/Config/` splits the same way: `Config` (loading, schema, self-check), `Appearance`,
 `Color`, `Command`, and `Template` — the file written on first run, which is also the

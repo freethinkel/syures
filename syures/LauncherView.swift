@@ -124,7 +124,7 @@ struct LauncherView: View {
             ScrollView {
                 VStack(spacing: 2) {
                     ForEach(Array(launcher.results.enumerated()), id: \.element) { index, item in
-                        ResultRow(item: item, isSelected: index == launcher.selected, theme: theme)
+                        ResultRow(entry: item, isSelected: index == launcher.selected, theme: theme)
                             .id(index)
                             .onTapGesture {
                                 if !launcher.run(item) { dismiss() }
@@ -203,7 +203,7 @@ private struct Shade: ViewModifier {
 }
 
 private struct ResultRow: View {
-    let item: Launcher.Item
+    let entry: Entry
     let isSelected: Bool
     let theme: Config.Appearance
 
@@ -212,9 +212,9 @@ private struct ResultRow: View {
             icon.frame(width: 28, height: 28)
 
             VStack(alignment: .leading, spacing: 1) {
-                Text(item.name)
+                Text(entry.name)
                     .font(theme.font(size: theme.rowFontSize))
-                if let subtitle = item.subtitle {
+                if let subtitle = entry.subtitle {
                     Text(subtitle)
                         .font(theme.font(size: theme.rowFontSize - 3))
                         .foregroundStyle(.secondary)
@@ -234,19 +234,14 @@ private struct ResultRow: View {
 
     @ViewBuilder
     private var icon: some View {
-        switch item {
-        case .command(let command):
-            Glyph(name: command.icon ?? "terminal", size: 18, theme: theme)
-        case .provided(let result):
-            switch result.icon {
-            case .file(let url):
-                Image(nsImage: Launcher.icon(for: url.path))
-                    .resizable()
-            case .symbol(let name):
-                Glyph(name: name, size: 18, theme: theme)
-            case nil:
-                Glyph(name: "sparkles", size: 18, theme: theme)
-            }
+        switch entry.icon {
+        case .file(let url):
+            Image(nsImage: Launcher.icon(for: url.path))
+                .resizable()
+        case .symbol(let name):
+            Glyph(name: name, size: 18, theme: theme)
+        case nil:
+            Glyph(name: "sparkles", size: 18, theme: theme)
         }
     }
 }
