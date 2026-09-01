@@ -89,7 +89,7 @@ final class Launcher {
 
     func activate() {
         config = Config.load()
-        for index in providers.indices { providers[index].reload(config) }
+        providers = Launcher.allProviders(config)
         stack.removeAll()
         settle()
         query = ""

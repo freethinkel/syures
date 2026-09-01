@@ -6,19 +6,11 @@ import Foundation
 /// can carry `commands` or `menu`, and opening a submenu is a state the card goes into, which a
 /// `Provided` has no way to express.
 struct CommandsProvider: Provider {
-    private var entries: [Entry]
+    private let entries: [Entry]
 
     init(_ config: Config) {
-        entries = CommandsProvider.entries(config)
-    }
-
-    mutating func reload(_ config: Config) {
-        entries = CommandsProvider.entries(config)
+        entries = config.commands.map { Entry(.command($0)) }
     }
 
     func search(_ query: String) -> [Match] { Entry.search(entries, query) }
-
-    private static func entries(_ config: Config) -> [Entry] {
-        config.commands.map { Entry(.command($0)) }
-    }
 }

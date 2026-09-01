@@ -6,14 +6,7 @@ import Foundation
 /// sources whose answer is in no list at all: a calculator reads `2+2`, and "4" would never match
 /// the query it came from.
 protocol Provider {
-    /// Rebuilds whatever comes from the config. Sources that do not read it have nothing to do.
-    mutating func reload(_ config: Config)
-
     func search(_ query: String) -> [Match]
-}
-
-extension Provider {
-    mutating func reload(_ config: Config) {}
 }
 
 struct Match {
@@ -61,6 +54,8 @@ extension Launcher {
     /// are written by hand, so they sit above installed apps. Adding a provider is adding a file
     /// next to this one and a word to this array — a Swift type cannot be registered at runtime,
     /// which is what `menu` scripts are for.
+    /// Rebuilt on every activation, so a provider reads the config in its `init` and needs no
+    /// reload of its own. Free because the one source that touches the disk scans once.
     static func allProviders(_ config: Config) -> [any Provider] {
         [Calculator(), CommandsProvider(config), AppsProvider()]
     }

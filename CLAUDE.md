@@ -98,8 +98,9 @@ is one method — `search(_:) -> [Match]` — and the scoring lives inside the p
 outside it, for the sake of sources whose answer is in no list at all: a calculator reads `2+2`,
 and "4" would never match the query it came from. `Entry` is the shared match key (name lowercased
 to UTF-8 plus positional bonuses) and `Entry.search` the shape every list-backed provider uses, so
-all their scores stay comparable. `reload(_:)` is for what comes from the config; sources that do
-not read it skip it.
+all their scores stay comparable. The list of providers is rebuilt on every activation, so a
+provider reads the config in its `init` and needs no reload of its own — free, because the one
+source that touches the disk scans once for the life of the process.
 
 A `Match` is an item, a score, and `exclusive` — an answer to the query rather than a match for
 it. One exclusive match in the list and only those are shown, which is how `2+2` shows the sum

@@ -10,9 +10,11 @@ struct AppsProvider: Provider {
         NSHomeDirectory() + "/Applications",
     ]
 
-    private let entries = AppsProvider.installed().map { Entry(.provided($0)) }
+    /// Scanned once for the life of the process, which is what "scanned at launch" already meant
+    /// — and what makes rebuilding the provider list on every activation free.
+    nonisolated(unsafe) private static let entries = installed().map { Entry(.provided($0)) }
 
-    func search(_ query: String) -> [Match] { Entry.search(entries, query) }
+    func search(_ query: String) -> [Match] { Entry.search(AppsProvider.entries, query) }
 
     static func installed() -> [Launcher.Provided] {
         searchPaths
