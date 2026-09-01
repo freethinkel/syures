@@ -109,9 +109,12 @@ provider's place in `Launcher.allProviders` — that array is the registry, and 
 adding a file next to it plus a word in it. A Swift type cannot be registered at runtime, which is
 what `menu` scripts are for.
 
-`AppsProvider` and `Calculator` yield `.provided` items — `Action` (`copy`/`run`/`open`) and `Icon`
+`AppsProvider` and `Calculator` yield `.provided` items. What a result is and what happens when it
+is picked live together in `Providers/Item.swift`: `Action` (`copy`/`run`/`open`) and `Icon`
 (`symbol`/`file`) are data, not closures, which keeps `Provided` `Hashable` and the provider pure,
-and `id` is its frecency key (`nil` for a calculation, `"app:<path>"` for an app). `CommandsProvider`
+and `id` is its frecency key (`nil` for a calculation, `"app:<path>"` for an app). `Action.perform`
+is the one place a result is carried out — the pasteboard, `NSWorkspace`, and the only `/bin/sh`
+spawn that is not a `menu` reading stdout — so `Launcher` picks items rather than executing them. `CommandsProvider`
 yields `.command` items instead, because a command can carry `commands` or `menu`, and opening a
 submenu is a state the card goes into, which a `Provided` cannot express.
 

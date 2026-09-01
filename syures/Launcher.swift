@@ -2,50 +2,7 @@ import AppKit
 
 @Observable
 final class Launcher {
-    enum Item: Hashable {
-        /// A command written in the config: it can open a submenu, so it is not a `Provided`.
-        case command(Config.Command)
-        case provided(Provided)
 
-        var name: String {
-            switch self {
-            case .command(let command): command.name
-            case .provided(let result): result.name
-            }
-        }
-
-        var subtitle: String? {
-            switch self {
-            case .command(let command): command.subtitle
-            case .provided(let result): result.subtitle
-            }
-        }
-    }
-
-    /// Anything a `ResultProvider` puts in the list. Its action is data, not a closure, so a
-    /// provider stays a pure function and `Provided` stays `Hashable` — it is its own list id.
-    struct Provided: Hashable {
-        let name: String
-        var subtitle: String? = nil
-        var icon: Icon? = nil
-        let action: Action
-        /// Frecency key. `nil` for a result recomputed from the query — a calculation has no
-        /// history worth keeping.
-        var id: String? = nil
-
-        enum Icon: Hashable {
-            /// An SF Symbol, an emoji, or a Nerd Font glyph.
-            case symbol(String)
-            /// The file's own icon, the way an app is drawn.
-            case file(URL)
-        }
-
-        enum Action: Hashable {
-            case copy(String)
-            case run(String)
-            case open(URL)
-        }
-    }
 
     var query = "" { didSet { search() } }
     var selected = 0
@@ -107,15 +64,7 @@ final class Launcher {
         remember(Launcher.frecencyID(item, in: path.joined(separator: "/")))
         switch item {
         case .provided(let result):
-            switch result.action {
-            case .copy(let text):
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(text, forType: .string)
-            case .run(let script):
-                Launcher.shell(script, nil)
-            case .open(let url):
-                NSWorkspace.shared.open(url)
-            }
+            result.action.perform()
             return false
         case .command(let command):
             if let children = command.commands {
@@ -131,7 +80,7 @@ final class Launcher {
             }
             // A prefixed `run` gets the rest of the query as `$1`; a prefixed `menu` never gets
             // here — its level opens as soon as the prefix is typed, see `search()`.
-            if let script = command.run { Launcher.shell(script, argument) }
+            if let script = command.run { Launcher.Provided.Action.run(script).perform(argument) }
             return false
         }
     }
@@ -197,7 +146,7 @@ final class Launcher {
         await Task.detached {
             let process = Process()
             process.executableURL = URL(filePath: "/bin/sh")
-            process.arguments = shellArguments(script, argument)
+            process.arguments = Provided.Action.shellArguments(script, argument)
             process.currentDirectoryURL = directory
             let pipe = Pipe()
             process.standardOutput = pipe
@@ -221,20 +170,6 @@ final class Launcher {
         }.value
     }
 
-    /// Passed to `sh` as a real positional parameter, so the query never becomes shell syntax.
-    /// The `"syures"` in the middle is `$0` — `sh -c` spends it on the script name.
-    nonisolated private static func shellArguments(_ script: String, _ argument: String?) -> [String] {
-        ["-c", script, "syures"] + (argument.map { [$0] } ?? [])
-    }
-
-    private static func shell(_ script: String, _ argument: String?) {
-        let process = Process()
-        process.executableURL = URL(filePath: "/bin/sh")
-        process.arguments = shellArguments(script, argument)
-        // `./script.sh` in a command means what it looks like: next to the config.
-        process.currentDirectoryURL = Config.directory
-        try? process.run()
-    }
 
     /// The root command whose `prefix` starts `query`, and the rest of the query — its argument.
     /// The longest prefix wins, so a `"g"` entry does not shadow a `"gh "` one written after it.
