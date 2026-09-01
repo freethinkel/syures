@@ -19,17 +19,30 @@ extension Config {
     }
 }
 
-extension [Config.Command] {
-    /// The command whose `prefix` starts `query`, and the rest of the query — its argument.
-    /// The longest prefix wins, so a `"g"` entry does not shadow a `"gh "` one written after it.
-    func prefixed(_ query: String) -> (command: Config.Command, argument: String)? {
-        var best: (command: Config.Command, argument: String)?
-        for command in self {
-            guard let prefix = command.prefix, !prefix.isEmpty,
-                  prefix.count > best?.command.prefix?.count ?? 0,
-                  let match = query.range(of: prefix, options: [.caseInsensitive, .anchored])
-            else { continue }
-            best = (command, String(query[match.upperBound...]))
+extension Config {
+    /// A folder under `plugins/`: its `plugin.jsonc` is an array of commands — the same shape
+    /// `menu` output and the old config `commands` had — and the folder is the working directory
+    /// their scripts run from, so `./script.sh` inside a plugin means the plugin's own script.
+    struct Plugin {
+        let directory: URL
+        let commands: [Command]
+    }
+}
+
+extension [Config.Plugin] {
+    /// The command whose `prefix` starts `query`, with its plugin's directory and the rest of
+    /// the query — its argument. The longest prefix wins, so a `"g"` entry does not shadow a
+    /// `"gh "` one installed after it.
+    func prefixed(_ query: String) -> (command: Config.Command, directory: URL, argument: String)? {
+        var best: (command: Config.Command, directory: URL, argument: String)?
+        for plugin in self {
+            for command in plugin.commands {
+                guard let prefix = command.prefix, !prefix.isEmpty,
+                      prefix.count > best?.command.prefix?.count ?? 0,
+                      let match = query.range(of: prefix, options: [.caseInsensitive, .anchored])
+                else { continue }
+                best = (command, plugin.directory, String(query[match.upperBound...]))
+            }
         }
         return best
     }

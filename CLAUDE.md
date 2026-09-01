@@ -62,19 +62,27 @@ Ownership chain: `SyuresApp` → `AppDelegate` → `LauncherPanel` → `Launcher
   the config file are provably read the same way. It keeps `allowsJSON5`, so looser files still
   parse; the written template stays strict JSONC.
 
-## Config is the extension point
+## Plugins are the extension point
+
+Commands come from plugins, not the config: a plugin is a folder under `plugins/` next to the
+config — usually a `git clone` — whose `plugin.jsonc` is a JSON array of `Command`. The folder is
+the working directory its scripts run from, so `./script.sh` in a manifest means the plugin's own
+script. Installing is cloning, updating is `git pull`, removing is deleting the folder; the
+starter plugin (written on first run, `Config.starterPlugin`) wraps install/update as commands.
+A broken manifest skips that one plugin and logs, never the rest.
 
 A `Config.Command` does exactly one of three things, and the schema enforces the `oneOf`:
 
-- `run` — shell one-liner sent to `/bin/sh -c` with the config folder as its working directory, so
+- `run` — shell one-liner sent to `/bin/sh -c` with the plugin folder as its working directory, so
   `open https://…` and `./script.sh` both work. No separate "open a URL" key is needed.
 - `commands` — a submenu written out in place.
-- `menu` — a shell one-liner whose stdout is a JSON array of `Command`. **The plugin contract is the
-  config schema**: plugin output nests further with the same three keys, `config.schema.json`
-  validates both, and `Config.selfCheck()` covers both in one test.
+- `menu` — a shell one-liner whose stdout is a JSON array of `Command` — the same shape as a
+  manifest, so `menu` output nests further with the same three keys, `config.schema.json`
+  validates config, manifest and `menu` output alike, and `Config.selfCheck()` covers them in one
+  test.
 
-`plugins/gh-search` is the worked example of all this — copy `plugins/` next to the config
-(`chmod +x` survives the copy only with `cp -p`) and point `menu` at it.
+`plugins/gh-search` is the worked example of all this — a folder with a manifest and a script,
+installed by copying (`cp -p` keeps the executable bit) or cloning it into `plugins/`.
 
 A `prefix` ("gh ") is the exception to fuzzy search: at the root it takes the query over and the
 rest of it goes to the command's `run`/`menu` one-liner as a real `sh` positional parameter, `$1`,

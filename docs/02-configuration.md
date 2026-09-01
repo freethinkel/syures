@@ -46,10 +46,10 @@ A theme is an overlay on `appearance`. It lists only the keys it changes.
 },
 ```
 
-A theme can also be a file. Drop `themes/nord.jsonc` next to the config, with the same shape as one entry above, and `"theme": "nord"` picks it up. That is how the template's "Import Theme" command works: it downloads a URL from the clipboard into `themes/`.
+A theme can also be a file. Drop `themes/nord.jsonc` next to the config, with the same shape as one entry above, and `"theme": "nord"` picks it up. That is how the starter plugin's "Import Theme" command works: it downloads a URL from the clipboard into `themes/`.
 
-Switching themes is a command that rewrites one line of the config with `sed`. The template ships three. Since the config reloads when the card opens, the switch is visible the next time you press the hotkey.
+Switching themes is a command that rewrites one line of the config with `sed`. The starter plugin ships three. Since the config reloads when the card opens, the switch is visible the next time you press the hotkey.
 
-## commands
+## What about commands?
 
-The list of things you can launch besides apps. Each entry is a `Command`, covered on the next page.
+There is no `commands` key. Everything you can launch besides apps comes from plugins — folders under `plugins/` next to this file, each with a `plugin.jsonc` listing its commands. Covered on the next two pages.

@@ -26,6 +26,8 @@ final class Launcher {
         var entries: [CommandEntry]
         /// Set on a level a `prefix` opened: the query is this script's `$1`, re-run as it changes.
         let script: String?
+        /// The plugin folder the level's scripts run from.
+        let directory: URL
     }
 
     /// One entry per submenu the user has stepped into. Empty means the root list.
@@ -67,21 +69,21 @@ final class Launcher {
 
     /// What a `CommandEntry` does when it is picked: a submenu is a state the card goes into,
     /// so only the launcher can carry it out.
-    func open(_ command: Config.Command) -> Bool {
+    func open(_ command: Config.Command, at directory: URL) -> Bool {
         if let children = command.commands {
-            push(command, children, script: nil)
+            push(command, children, script: nil, at: directory)
             return true
         }
         if let script = command.menu {
             // Picked by name rather than typed as a prefix, a search plugin still opens as a
             // live level: pushing it runs the script for the empty query.
-            push(command, [], script: command.prefix == nil ? nil : script)
+            push(command, [], script: command.prefix == nil ? nil : script, at: directory)
             if command.prefix == nil { produce(script, nil) }
             return true
         }
         // A prefixed `run` gets the rest of the query as `$1`; a prefixed `menu` never gets
         // here — its level opens as soon as the prefix is typed, see `search()`.
-        if let script = command.run { Launcher.shell(script, argument) }
+        if let script = command.run { Launcher.shell(script, argument, in: directory) }
         return false
     }
 
@@ -100,10 +102,12 @@ final class Launcher {
     }
 
     /// `query` is what the field shows on the new level; `nil` leaves it to the caller.
-    private func push(_ command: Config.Command, _ commands: [Config.Command], script: String?, query: String? = "") {
+    private func push(_ command: Config.Command, _ commands: [Config.Command], script: String?,
+                      at directory: URL, query: String? = "") {
         let menu = (path + [command.name]).joined(separator: "/")
         stack.append(Level(title: command.name, icon: command.icon,
-                           entries: commands.map { CommandEntry($0, in: menu) }, script: script))
+                           entries: commands.map { CommandEntry($0, at: directory, in: menu) },
+                           script: script, directory: directory))
         settle()
         if let query { self.query = query }  // didSet re-runs the search against the level just pushed
     }
@@ -119,16 +123,17 @@ final class Launcher {
     /// with a spinner, so a slow plugin does not look like a dead panel. `delay` debounces the
     /// per-keystroke case; a run the query or level has outpaced drops its output.
     private func produce(_ script: String, _ argument: String?, after delay: Duration = .zero) {
+        let directory = stack[stack.count - 1].directory
         settle()
         loading = true
         let generation = self.generation
         pending = Task { @MainActor in
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled else { return }
-            let commands = await Launcher.produce(script, argument, in: Config.directory)
+            let commands = await Launcher.produce(script, argument, in: directory)
             guard generation == self.generation else { return }
             loading = false
-            let entries = (commands ?? []).map { CommandEntry($0, in: path.joined(separator: "/")) }
+            let entries = (commands ?? []).map { CommandEntry($0, at: directory, in: path.joined(separator: "/")) }
             stack[stack.count - 1].entries = entries
             if stack[stack.count - 1].script == nil {
                 search()  // whatever the user typed meanwhile filters the fresh list
@@ -170,12 +175,12 @@ final class Launcher {
 
 
     /// Spawns and forgets: waiting would freeze the card until the process is done.
-    private static func shell(_ script: String, _ argument: String?) {
+    private static func shell(_ script: String, _ argument: String?, in directory: URL) {
         let process = Process()
         process.executableURL = URL(filePath: "/bin/sh")
         process.arguments = shellArguments(script, argument)
-        // `./script.sh` in a command means what it looks like: next to the config.
-        process.currentDirectoryURL = Config.directory
+        // `./script.sh` in a command means what it looks like: next to its own plugin.
+        process.currentDirectoryURL = directory
         try? process.run()
     }
 
@@ -189,21 +194,21 @@ final class Launcher {
         selected = 0
         argument = nil
 
-        if stack.isEmpty, let match = config.commands.prefixed(query) {
+        if stack.isEmpty, let match = config.plugins.prefixed(query) {
             // The prefix takes the query over: what follows it is an argument, not a search term.
             if let script = match.command.menu {
                 // A search plugin: its level opens right away and the query becomes its `$1`.
                 // The query is not touched here, inside its own `didSet`: the field is still
                 // committing the text that got us here and would keep showing it. The prefix is
                 // stripped on the next turn of the run loop, and that edit runs the script.
-                push(match.command, [], script: script, query: nil)
+                push(match.command, [], script: script, at: match.directory, query: nil)
                 results = []
                 let argument = match.argument
                 DispatchQueue.main.async { self.query = argument }
                 return
             }
             argument = match.argument
-            results = [CommandEntry(match.command)]
+            results = [CommandEntry(match.command, at: match.directory)]
             return
         }
 

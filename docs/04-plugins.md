@@ -1,21 +1,37 @@
 # Plugins
 
-A plugin is any program that prints a JSON array of commands. Point a `menu` at it and its output is a submenu. Nothing to register, no SDK, no manifest.
+A plugin is a folder under `~/.config/syures/plugins/`. Installing one is making that folder — usually with `git clone` — and removing one is deleting it. There is no registry and no SDK; the whole contract is one file:
 
-The output has the same shape as the `commands` array in your config, with the same three keys: `run`, `commands`, `menu`. So a plugin's output can itself contain submenus and further `menu` scripts. `config.schema.json` describes both the config and plugin output, since they are the same thing.
+```
+~/.config/syures/plugins/<name>/
+  plugin.jsonc     the manifest: a JSON array of commands
+  …                whatever else the plugin needs — scripts run from this folder
+```
+
+The manifest has the same shape a `menu` script prints, with the same three keys per command: `run`, `commands`, `menu`. `config.schema.json` describes both. On the first run syures writes `plugins/starter/` — a working manifest with `install`/`update` commands and examples to steal.
+
+```sh
+# install
+git clone https://github.com/you/your-plugin ~/.config/syures/plugins/your-plugin
+# update them all
+for d in ~/.config/syures/plugins/*/; do git -C "$d" pull; done
+```
+
+The starter plugin wraps both of those as commands, so `install <url>` from the launcher itself works too. A cloned plugin is code that runs as you — read it first, the schema validates shape, not intent.
 
 ## A minimal plugin
 
 ```sh
 #!/bin/sh
-# ~/.config/syures/plugins/projects
+# ~/.config/syures/plugins/projects/projects
 ls -d "$1"/*/ | sed 's|/$||' | while read -r dir; do
   printf '{ "name": "%s", "run": "open \\"%s\\"" },' "$(basename "$dir")" "$dir"
 done | sed 's/^/[/; s/,$/]/'
 ```
 
 ```jsonc
-{ "name": "Projects", "icon": "folder", "menu": "./plugins/projects ~/Developer" },
+// ~/.config/syures/plugins/projects/plugin.jsonc
+[{ "name": "Projects", "icon": "folder", "menu": "./projects ~/Developer" }]
 ```
 
 The argument goes in the `menu` string. Or it comes from the user through `prefix`, covered in [Commands](03-commands.md#prefix).
@@ -49,13 +65,7 @@ The user sees the problem and Enter fixes it.
 ## Installing the bundled example
 
 ```sh
-cp -pR plugins ~/.config/syures/
+cp -pR plugins/gh-search ~/.config/syures/plugins/
 ```
 
-`-p` keeps the executable bit. Then add to `commands`:
-
-```jsonc
-{ "name": "GitHub", "prefix": "gh ", "icon": "globe", "menu": "./plugins/gh-search \"$1\"" },
-```
-
-Type `gh swift`, press Enter, get the top twenty repos.
+`-p` keeps the executable bit; a `git clone` of a plugin repo works the same way. Its `plugin.jsonc` already declares the `gh ` prefix — type `gh swift` and get the top twenty repos.

@@ -6,10 +6,11 @@ import SwiftUI
 struct Config: Decodable {
     var hotkey: String
     var appearance: Appearance
-    var commands: [Command]
     /// Name of the `themes` entry layered over `appearance`.
     var theme: String?
     var themes: [String: Appearance]
+    /// Not from the file: one entry per folder under `plugins/`, filled in by `load()`.
+    var plugins: [Plugin] = []
 
     static let url = URL(filePath: NSHomeDirectory() + "/.config/syures/config.jsonc")
 
@@ -17,6 +18,12 @@ struct Config: Decodable {
     static var directory: URL { url.deletingLastPathComponent() }
 
     static func load() -> Config {
+        var config = loaded()
+        config.plugins = loadPlugins()
+        return config
+    }
+
+    private static func loaded() -> Config {
         guard let data = try? Data(contentsOf: url) else { return Config() }
         do {
             var config = try decode(data)
@@ -31,6 +38,26 @@ struct Config: Decodable {
         } catch {
             NSLog("syures: ignoring invalid config — \(error)")
             return Config()
+        }
+    }
+
+    /// A plugin is a folder — usually a `git clone` — under `plugins/`, and installing one is
+    /// making that folder. A broken manifest skips that plugin, never the rest.
+    static func loadPlugins() -> [Plugin] {
+        let root = directory.appending(path: "plugins")
+        let folders = (try? FileManager.default.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
+        return folders.sorted { $0.lastPathComponent < $1.lastPathComponent }.compactMap { folder in
+            guard let data = try? Data(contentsOf: folder.appending(path: "plugin.jsonc")) else {
+                return nil  // not a plugin: a stray file, or a folder without a manifest
+            }
+            do {
+                return Plugin(directory: folder,
+                              commands: try decoder().decode([Command].self, from: data))
+            } catch {
+                NSLog("syures: ignoring plugin \(folder.lastPathComponent) — \(error)")
+                return nil
+            }
         }
     }
 
@@ -76,7 +103,7 @@ struct Config: Decodable {
     }
 
     #if DEBUG
-    /// A plugin prints the same `Command` shape the config holds, so one check covers both.
+    /// A `menu` prints the same `Command` shape a `plugin.jsonc` holds, so one check covers both.
     static func selfCheck() {
         let json = """
         [
@@ -92,27 +119,37 @@ struct Config: Decodable {
         assert(commands[1].menu == "./plugins/projects ~")
         assert(commands[1].commands == nil)
         // A prefix takes the query over; anything else still goes to the fuzzy search.
-        assert(commands.prefixed("gh swift")?.argument == "swift")
-        assert(commands.prefixed("GH swift")?.command.name == "GitHub")
-        assert(commands.prefixed("projects") == nil)
+        let plugins = [Plugin(directory: directory, commands: commands)]
+        assert(plugins.prefixed("gh swift")?.argument == "swift")
+        assert(plugins.prefixed("GH swift")?.command.name == "GitHub")
+        assert(plugins.prefixed("projects") == nil)
         // The longest prefix wins, whatever order the entries are written in.
-        assert(commands.prefixed("g maps")?.command.name == "Google")
-        assert(commands.prefixed("ghost")?.command.name == "Google")
+        assert(plugins.prefixed("g maps")?.command.name == "Google")
+        assert(plugins.prefixed("ghost")?.command.name == "Google")
+        // The files written on first run must parse with the app's own decoder.
+        assert((try? decoder().decode(Config.self, from: Data(template.utf8))) != nil)
+        assert((try? decoder().decode([Command].self, from: Data(starterPlugin.utf8))) != nil)
     }
     #endif
 
-    /// Drops a self-documenting config in place the first time the app runs.
+    /// Drops a self-documenting config — and the starter plugin, the manifest that documents
+    /// itself — in place the first time the app runs.
     static func writeDefaultIfMissing() {
-        guard !FileManager.default.fileExists(atPath: url.path) else { return }
-        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
-                                                 withIntermediateDirectories: true)
-        try? Data(template.utf8).write(to: url)
+        if !FileManager.default.fileExists(atPath: url.path) {
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try? Data(template.utf8).write(to: url)
+        }
+        let starter = directory.appending(path: "plugins/starter/plugin.jsonc")
+        if !FileManager.default.fileExists(atPath: starter.path) {
+            try? FileManager.default.createDirectory(at: starter.deletingLastPathComponent(),
+                                                     withIntermediateDirectories: true)
+            try? Data(starterPlugin.utf8).write(to: starter)
+        }
     }
 
     init() {
         hotkey = "opt+space"
         appearance = Appearance()
-        commands = []
         theme = nil
         themes = [:]
     }
@@ -121,12 +158,11 @@ struct Config: Decodable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         hotkey = container.value(.hotkey, or: "opt+space")
         appearance = container.value(.appearance, or: Appearance())
-        commands = container.value(.commands, or: [])
         theme = container.value(.theme, or: String?.none)
         themes = container.value(.themes, or: [:])
     }
 
-    private enum CodingKeys: String, CodingKey { case hotkey, appearance, commands, theme, themes }
+    private enum CodingKeys: String, CodingKey { case hotkey, appearance, theme, themes }
 }
 
 extension KeyedDecodingContainer {
