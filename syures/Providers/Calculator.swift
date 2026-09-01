@@ -68,7 +68,7 @@ final class AnswerEntry: Entry {
     }
 
     override var subtitle: String? { expression }
-    override var icon: Icon? { .symbol("equal.square") }
+    override var icon: Icon { .symbol("equal.square") }
     override var exclusive: Bool { true }
     override func score(_ needle: [UInt8]) -> Int? { 0 }
 

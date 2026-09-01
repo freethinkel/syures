@@ -7,7 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `syures` — a Raycast-style macOS launcher. Menu-bar-less agent app (`.accessory` activation
 policy): no window, no dock icon, only a global hotkey that toggles a floating panel.
 
-No tests, no package manager, no dependencies — a plain Xcode project with 6 Swift files.
+No tests, no package manager, no dependencies — a plain Xcode project, a dozen-odd Swift
+files in `syures/`, with `Config/` and `Providers/` the two folders that grow.
 
 ## Build & run
 
@@ -39,15 +40,15 @@ Ownership chain: `SyuresApp` → `AppDelegate` → `LauncherPanel` → `Launcher
   a fixed, transparent, oversized rect (max card size + a 48pt shadow margin); the SwiftUI card
   sizes itself inside it. `show()` avoids `NSApp.activate()` so the user's frontmost app keeps
   focus. `resignKey()` auto-hides.
-- **Launcher.swift** — `@Observable` model. Apps are scanned once at launch from a fixed list of
-  `/Applications`-style paths. Search is a fuzzy match over config commands + apps: a
-  Smith-Waterman-style DP (`fuzzyScore`) scoring contiguous runs, word starts and camelCase, with
-  one typo tolerated, sorted by score — the full list is shown, the card scrolls. Frecency
-  (launch counts in UserDefaults, halved every two weeks) is the tiebreaker, never a bonus added
-  to the score: the gaps between a better and a worse match are as small as 2 points, so any
-  bonus large enough to matter would overturn them. Setting `query`
-  triggers `search()` via `didSet`. `selfCheck()` (DEBUG only, called from `AppDelegate`)
-  asserts the ranking rules, the calculator provider and its place in the results.
+- **Launcher.swift** — `@Observable` model. It owns the query, the submenu stack and the ordering,
+  and nothing else: the rows come from the providers (see below). Matching is a Smith-Waterman-style
+  DP (`fuzzyScore`) scoring contiguous runs, word starts and camelCase, with one typo tolerated —
+  the full list is shown, the card scrolls. Frecency (launch counts in UserDefaults, halved every
+  two weeks) is the tiebreaker, never a bonus added to the score: the gaps between a better and a
+  worse match are as small as 2 points, so any bonus large enough to matter would overturn them.
+  Setting `query` triggers `search()` via `didSet`. `selfCheck()` (DEBUG only, called from
+  `AppDelegate`) asserts the ranking rules and `merge`, on rows made up in the check rather than
+  whatever this machine has installed; `Calculator.selfCheck()` covers the arithmetic.
 - **LauncherView.swift** — the whole UI, driven entirely by `launcher.config.appearance`. Never
   hardcode sizes/colors here; add a config key instead. The card is the scroll view itself: the
   field floats over it as a ZStack sibling (an overlay would be capped by the card's height, which
@@ -55,8 +56,11 @@ Ownership chain: `SyuresApp` → `AppDelegate` → `LauncherPanel` → `Launcher
   pass under it. Card width must be set before `CardSurface` draws, or the card is as wide as its
   longest row. Re-focus of the search field is driven by
   the `launcher.activation` counter, not by visibility.
-- **Config.swift** — `~/.config/syures/config.jsonc` — JSONC (comments + trailing commas). The decoder keeps
-  `allowsJSON5`, so looser files still parse; the written template stays strict JSONC.
+- **Config/** — `~/.config/syures/config.jsonc` — JSONC (comments + trailing commas), split into
+  `Config` (loading, schema, self-check), `Appearance`, `Color`, `Command` and `Template`. Every
+  read goes through `Config.decoder(over:)` — the one decoder in the app, so a plugin's stdout and
+  the config file are provably read the same way. It keeps `allowsJSON5`, so looser files still
+  parse; the written template stays strict JSONC.
 
 ## Config is the extension point
 
@@ -99,8 +103,11 @@ need not be in any list: a calculator reads `2+2` and builds the row for it, whi
 source ignores the query here and lets the rows do the matching.
 
 `Entry` is that row, and it is a class the providers subclass: `AppEntry`, `CommandEntry`,
-`AnswerEntry`. It knows its own `name`, `subtitle`, `icon`, `frecencyID`, how well it fits a query
-(`score`, one matcher for all so their numbers stay comparable, built once into a UTF-8 match key)
+`AnswerEntry`. It knows its own `name`, `subtitle`, `icon`, `frecencyID` (`nil` when there is no
+history worth keeping), how well it fits a query
+(`score`, one matcher for all so their numbers stay comparable, over a UTF-8 match key built
+lazily — a row that is rebuilt on every keystroke and never matched, like an answer, never pays
+for one)
 and what to do when picked (`run(in:)` — the pasteboard, `NSWorkspace`, or a submenu). So there is
 no enum of result kinds and `Launcher` never switches over what a row happens to be: it scores,
 sorts, and calls `run`.
@@ -108,8 +115,8 @@ sorts, and calls `run`.
 `exclusive` is an answer to the query rather than a match for it — one in the list and only those
 are shown, which is how `2+2` shows the sum instead of apps whose names resemble it. `AnswerEntry`
 also overrides `score` to a constant, since the matcher would never find "4" in the `2+2` it came
-from. `merge` orders by score, then frecency, then the provider's place in `Launcher.allProviders`
-— that array is the registry, and adding a provider is adding a file next to it plus a word in it.
+from. `merge` orders by score, then frecency, then the provider's place in `Launcher.allProviders`,
+then the name — that array is the registry, and adding a provider is adding a file next to it plus a word in it.
 A Swift type cannot be registered at runtime, which is what `menu` scripts are for.
 
 Opening a submenu is the exception to "the entry does the work": it is a state the card goes into,

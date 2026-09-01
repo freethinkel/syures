@@ -34,12 +34,12 @@ final class AppEntry: Entry {
         super.init(url.deletingPathExtension().lastPathComponent)
     }
 
-    override var icon: Icon? { .file(url) }
+    override var icon: Icon { .file(url) }
     /// The key launch counts have always been kept under, so history survives.
-    override var frecencyID: String { "app:\(url.path)" }
+    override var frecencyID: String? { "app:\(url.path)" }
 
     override func run(in launcher: Launcher) -> Bool {
-        NSWorkspace.shared.open(url)
+        NSWorkspace.shared.openApplication(at: url, configuration: .init())
         return false
     }
 }

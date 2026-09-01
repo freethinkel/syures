@@ -18,3 +18,19 @@ extension Config {
         var prefix: String?
     }
 }
+
+extension [Config.Command] {
+    /// The command whose `prefix` starts `query`, and the rest of the query — its argument.
+    /// The longest prefix wins, so a `"g"` entry does not shadow a `"gh "` one written after it.
+    func prefixed(_ query: String) -> (command: Config.Command, argument: String)? {
+        var best: (command: Config.Command, argument: String)?
+        for command in self {
+            guard let prefix = command.prefix, !prefix.isEmpty,
+                  prefix.count > best?.command.prefix?.count ?? 0,
+                  let match = query.range(of: prefix, options: [.caseInsensitive, .anchored])
+            else { continue }
+            best = (command, String(query[match.upperBound...]))
+        }
+        return best
+    }
+}

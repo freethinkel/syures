@@ -25,8 +25,8 @@ final class CommandEntry: Entry {
     }
 
     override var subtitle: String? { command.subtitle }
-    override var icon: Icon? { .symbol(command.icon ?? "terminal") }
-    override var frecencyID: String { "cmd:\(menu)/\(command.name)" }
+    override var icon: Icon { .symbol(command.icon ?? "terminal") }
+    override var frecencyID: String? { "cmd:\(menu)/\(command.name)" }
 
     override func run(in launcher: Launcher) -> Bool { launcher.open(command) }
 }

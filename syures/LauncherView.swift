@@ -240,8 +240,6 @@ private struct ResultRow: View {
                 .resizable()
         case .symbol(let name):
             Glyph(name: name, size: 18, theme: theme)
-        case nil:
-            Glyph(name: "sparkles", size: 18, theme: theme)
         }
     }
 }

@@ -41,9 +41,7 @@ struct Config: Decodable {
         let folder = directory.appending(path: "themes")
         let files = (try? FileManager.default.contentsOfDirectory(at: folder,
                                                                   includingPropertiesForKeys: nil)) ?? []
-        let decoder = JSONDecoder()
-        decoder.allowsJSON5 = true
-        decoder.userInfo[.appearanceBase] = base
+        let decoder = decoder(over: base)
         return files.reduce(into: [:]) { themes, file in
             guard let data = try? Data(contentsOf: file) else { return }
             do {
@@ -56,10 +54,16 @@ struct Config: Decodable {
     }
 
     private static func decode(_ data: Data, over base: Appearance? = nil) throws -> Config {
+        try decoder(over: base).decode(Config.self, from: data)
+    }
+
+    /// The one decoder in the app: the config and a plugin's stdout are the same schema, so they
+    /// must be read the same way. `base` is the appearance an overlay layers onto.
+    static func decoder(over base: Appearance? = nil) -> JSONDecoder {
         let decoder = JSONDecoder()
         decoder.allowsJSON5 = true
         decoder.userInfo[.appearanceBase] = base
-        return try decoder.decode(Config.self, from: data)
+        return decoder
     }
 
     static let schemaURL = url.deletingLastPathComponent().appending(path: "config.schema.json")
@@ -82,20 +86,18 @@ struct Config: Decodable {
           { "name": "GitHub", "prefix": "gh ", "menu": "./plugins/gh-search \\"$1\\"" }
         ]
         """
-        let decoder = JSONDecoder()
-        decoder.allowsJSON5 = true
-        let commands = try! decoder.decode([Command].self, from: Data(json.utf8))
+        let commands = try! decoder().decode([Command].self, from: Data(json.utf8))
         assert(commands[0].commands?.first?.run == "dark-mode on")
         assert(commands[0].menu == nil)
         assert(commands[1].menu == "./plugins/projects ~")
         assert(commands[1].commands == nil)
         // A prefix takes the query over; anything else still goes to the fuzzy search.
-        assert(Launcher.prefixed("gh swift", in: commands)?.argument == "swift")
-        assert(Launcher.prefixed("GH swift", in: commands)?.command.name == "GitHub")
-        assert(Launcher.prefixed("projects", in: commands) == nil)
+        assert(commands.prefixed("gh swift")?.argument == "swift")
+        assert(commands.prefixed("GH swift")?.command.name == "GitHub")
+        assert(commands.prefixed("projects") == nil)
         // The longest prefix wins, whatever order the entries are written in.
-        assert(Launcher.prefixed("g maps", in: commands)?.command.name == "Google")
-        assert(Launcher.prefixed("ghost", in: commands)?.command.name == "Google")
+        assert(commands.prefixed("g maps")?.command.name == "Google")
+        assert(commands.prefixed("ghost")?.command.name == "Google")
     }
     #endif
 

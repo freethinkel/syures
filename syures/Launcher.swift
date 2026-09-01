@@ -159,10 +159,8 @@ final class Launcher {
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
 
-            let decoder = JSONDecoder()
-            decoder.allowsJSON5 = true
             do {
-                return try decoder.decode([Config.Command].self, from: data)
+                return try Config.decoder().decode([Config.Command].self, from: data)
             } catch {
                 NSLog("syures: ignoring menu output — \(error)")
                 return nil
@@ -187,25 +185,11 @@ final class Launcher {
         ["-c", script, "syures"] + (argument.map { [$0] } ?? [])
     }
 
-    /// The root command whose `prefix` starts `query`, and the rest of the query — its argument.
-    /// The longest prefix wins, so a `"g"` entry does not shadow a `"gh "` one written after it.
-    static func prefixed(_ query: String, in commands: [Config.Command]) -> (command: Config.Command, argument: String)? {
-        var best: (command: Config.Command, argument: String)?
-        for command in commands {
-            guard let prefix = command.prefix, !prefix.isEmpty,
-                  prefix.count > best?.command.prefix?.count ?? 0,
-                  let match = query.range(of: prefix, options: [.caseInsensitive, .anchored])
-            else { continue }
-            best = (command, String(query[match.upperBound...]))
-        }
-        return best
-    }
-
     private func search() {
         selected = 0
         argument = nil
 
-        if stack.isEmpty, let match = Launcher.prefixed(query, in: config.commands) {
+        if stack.isEmpty, let match = config.commands.prefixed(query) {
             // The prefix takes the query over: what follows it is an argument, not a search term.
             if let script = match.command.menu {
                 // A search plugin: its level opens right away and the query becomes its `$1`.
@@ -242,30 +226,42 @@ final class Launcher {
         results = merge(providers.map { $0.search(query) }, for: query)
     }
 
+    /// A candidate and everything the ordering needs, so the sort reads as the rule the docs
+    /// state rather than as tuple indices.
+    private struct Ranked {
+        let entry: Entry
+        let score: Int
+        let frecency: Double
+        /// The provider's place in the registry — the last tie-break before the name.
+        let rank: Int
+    }
+
     /// The rows for a query in the order they are shown: score first, then frecency, then the
-    /// provider's place in the registry — `groups` is one array per provider, so that place is
-    /// just the index.
-    private func merge(_ groups: [[Entry]], for query: String) -> [Entry] {
+    /// provider's place in the registry, then the name — `groups` is one array per provider, so
+    /// that place is just the index.
+    func merge(_ groups: [[Entry]], for query: String) -> [Entry] {
         let needle = Array(query.lowercased().utf8)
+        let now = Date().timeIntervalSinceReferenceDate
         var scored = groups.enumerated().flatMap { rank, entries in
-            entries.compactMap { entry in entry.score(needle).map { (rank, entry, $0) } }
+            entries.compactMap { entry in
+                entry.score(needle).map {
+                    Ranked(entry: entry, score: $0,
+                           frecency: frecency(for: entry.frecencyID, now: now), rank: rank)
+                }
+            }
         }
         // An answer to the query cancels everything that merely resembles it.
-        if scored.contains(where: { $0.1.exclusive }) {
-            scored.removeAll { !$0.1.exclusive }
+        if scored.contains(where: { $0.entry.exclusive }) {
+            scored.removeAll { !$0.entry.exclusive }
         }
-        let now = Date().timeIntervalSinceReferenceDate
         // Frecency only orders equally good matches, so a better match always wins — a weighted
         // bonus cannot do that, since the gaps it would have to stay under are as small as 2.
-        return scored
-            .map { ($0.0, $0.1, $0.2, frecency(for: $0.1.frecencyID, now: now)) }
-            .sorted {
-                if $0.2 != $1.2 { return $0.2 > $1.2 }
-                if $0.3 != $1.3 { return $0.3 > $1.3 }
-                if $0.0 != $1.0 { return $0.0 < $1.0 }
-                return $0.1.name < $1.1.name
-            }
-            .map(\.1)
+        return scored.sorted {
+            if $0.score != $1.score { return $0.score > $1.score }
+            if $0.frecency != $1.frecency { return $0.frecency > $1.frecency }
+            if $0.rank != $1.rank { return $0.rank < $1.rank }
+            return $0.entry.name < $1.entry.name
+        }.map(\.entry)
     }
 
     // MARK: - Frecency
@@ -279,15 +275,15 @@ final class Launcher {
     private var records: [String: [Double]] =
         UserDefaults.standard.dictionary(forKey: Launcher.frecencyKey) as? [String: [Double]] ?? [:]
 
-    private func remember(_ id: String) {
-        guard !id.isEmpty else { return }  // a calculation, not something with a history
+    private func remember(_ id: String?) {
+        guard let id else { return }  // a calculation, not something with a history
         let count = records[id]?.first ?? 0
         records[id] = [count + 1, Date().timeIntervalSinceReferenceDate]
         UserDefaults.standard.set(records, forKey: Launcher.frecencyKey)
     }
 
-    private func frecency(for id: String, now: TimeInterval) -> Double {
-        guard let record = records[id], record.count == 2 else { return 0 }
+    private func frecency(for id: String?, now: TimeInterval) -> Double {
+        guard let id, let record = records[id], record.count == 2 else { return 0 }
         return Launcher.frecency(count: record[0], age: now - record[1])
     }
 
@@ -413,15 +409,19 @@ final class Launcher {
         // hold whatever the launch history is.
         assert(frecency(count: 3, age: 0) > frecency(count: 1, age: 0))
         assert(frecency(count: 5, age: 90 * 86400) < frecency(count: 1, age: 0))
-        // An answer takes the whole list: "2+2" shows the sum, not apps that resemble it.
+        // Merging, on rows made up here rather than whatever this machine has installed.
         let launcher = Launcher()
-        launcher.query = "2+2"
-        assert(launcher.results.map(\.name) == ["= 4"])
-        // Apps are a provider too, and theirs is an ordinary match, so it ranks with the rest.
-        // `Calculator.app` ships with macOS and is in `searchPaths`.
-        assert(AppsProvider.installed().contains { $0.lastPathComponent == "Calculator.app" })
-        launcher.query = "calculator"
-        assert(launcher.results.contains { $0.name == "Calculator" })
+        let apps = [Entry("Nosafari"), Entry("Safari"), Entry("Salt Fixer")]
+        let ranked = launcher.merge([apps], for: "saf")
+        assert(ranked.count == 3 && ranked.first?.name == "Safari")  // all match, the best leads
+        assert(launcher.merge([apps], for: "zzz").isEmpty)
+        // An answer takes the whole list: "2+2" shows the sum, not the apps that resemble it.
+        let answer = launcher.merge([[Entry("2+2 Player")], Calculator().search("2+2")], for: "2+2")
+        assert(answer.map(\.name) == ["= 4"])
+        // On an equal score the provider listed first wins.
+        let first = Entry("Same")
+        let tied = launcher.merge([[first], [Entry("Same")]], for: "same")
+        assert(tied.count == 2 && tied.first === first)
     }
     #endif
 
