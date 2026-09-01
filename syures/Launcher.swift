@@ -2,56 +2,19 @@ import AppKit
 
 @Observable
 final class Launcher {
-    enum Item: Hashable {
-        case app(URL)
-        case command(Config.Command)
 
-        var name: String {
-            switch self {
-            case .app(let url): url.deletingPathExtension().lastPathComponent
-            case .command(let command): command.name
-            }
-        }
-
-        var subtitle: String? {
-            switch self {
-            case .app: nil
-            case .command(let command): command.subtitle
-            }
-        }
-    }
-
-    /// A searchable item with its match key precomputed, so the keystroke path allocates nothing.
-    private struct Entry {
-        let item: Item
-        let name: String
-        /// Key of this item's frecency record.
-        let frecencyID: String
-        /// `name` lowercased, as UTF-8 bytes.
-        let haystack: [UInt8]
-        /// Positional bonus per byte of `haystack`.
-        let bonus: [Int]
-
-        init(_ item: Item, in menu: String = "") {
-            self.item = item
-            name = item.name
-            frecencyID = Launcher.frecencyID(item, in: menu)
-            (haystack, bonus) = Launcher.matchKey(name)
-        }
-    }
 
     var query = "" { didSet { search() } }
     var selected = 0
 
     private(set) var config = Config.load()
-    private(set) var results: [Item] = []
+    private(set) var results: [Entry] = []
     /// Bumped on every activation so the view can re-focus the search field.
     private(set) var activation = 0
     /// A `menu` script is still filling the level that is already on screen.
     private(set) var loading = false
 
-    private let apps = Launcher.installedApps().map { Entry(.app($0)) }
-    private var commands: [Entry] = []
+    private var providers: [any Provider] = []
 
     /// Text after a matched `prefix` — the argument the command's script gets on Enter.
     /// `nil` means no prefix matched, so the script is run with no argument at all.
@@ -60,9 +23,11 @@ final class Launcher {
     private struct Level {
         let title: String
         let icon: String?
-        var entries: [Entry]
+        var entries: [CommandEntry]
         /// Set on a level a `prefix` opened: the query is this script's `$1`, re-run as it changes.
         let script: String?
+        /// The plugin folder the level's scripts run from.
+        let directory: URL
     }
 
     /// One entry per submenu the user has stepped into. Empty means the root list.
@@ -78,12 +43,12 @@ final class Launcher {
     var current: (title: String, icon: String?)? { stack.last.map { ($0.title, $0.icon) } }
 
     init() {
-        commands = config.commands.map { Entry(.command($0)) }
+        providers = Launcher.allProviders(config)
     }
 
     func activate() {
         config = Config.load()
-        commands = config.commands.map { Entry(.command($0)) }
+        providers = Launcher.allProviders(config)
         stack.removeAll()
         settle()
         query = ""
@@ -95,31 +60,31 @@ final class Launcher {
         selected = min(max(0, selected + delta), results.count - 1)
     }
 
-    /// `true` means the item opened a submenu, so the panel should stay up.
+    /// `true` means the row opened a submenu, so the panel should stay up.
     @discardableResult
-    func run(_ item: Item) -> Bool {
-        remember(Launcher.frecencyID(item, in: path.joined(separator: "/")))
-        switch item {
-        case .app(let url):
-            NSWorkspace.shared.openApplication(at: url, configuration: .init())
-            return false
-        case .command(let command):
-            if let children = command.commands {
-                push(command, children, script: nil)
-                return true
-            }
-            if let script = command.menu {
-                // Picked by name rather than typed as a prefix, a search plugin still opens as a
-                // live level: pushing it runs the script for the empty query.
-                push(command, [], script: command.prefix == nil ? nil : script)
-                if command.prefix == nil { produce(script, nil) }
-                return true
-            }
-            // A prefixed `run` gets the rest of the query as `$1`; a prefixed `menu` never gets
-            // here — its level opens as soon as the prefix is typed, see `search()`.
-            if let script = command.run { Launcher.shell(script, argument) }
-            return false
+    func run(_ entry: Entry) -> Bool {
+        remember(entry.frecencyID)
+        return entry.run(in: self)
+    }
+
+    /// What a `CommandEntry` does when it is picked: a submenu is a state the card goes into,
+    /// so only the launcher can carry it out.
+    func open(_ command: Config.Command, at directory: URL) -> Bool {
+        if let children = command.commands {
+            push(command, children, script: nil, at: directory)
+            return true
         }
+        if let script = command.menu {
+            // Picked by name rather than typed as a prefix, a search plugin still opens as a
+            // live level: pushing it runs the script for the empty query.
+            push(command, [], script: command.prefix == nil ? nil : script, at: directory)
+            if command.prefix == nil { produce(script, nil) }
+            return true
+        }
+        // A prefixed `run` gets the rest of the query as `$1`; a prefixed `menu` never gets
+        // here — its level opens as soon as the prefix is typed, see `search()`.
+        if let script = command.run { Launcher.shell(script, argument, in: directory) }
+        return false
     }
 
     func runSelected() -> Bool {
@@ -137,10 +102,12 @@ final class Launcher {
     }
 
     /// `query` is what the field shows on the new level; `nil` leaves it to the caller.
-    private func push(_ command: Config.Command, _ commands: [Config.Command], script: String?, query: String? = "") {
+    private func push(_ command: Config.Command, _ commands: [Config.Command], script: String?,
+                      at directory: URL, query: String? = "") {
         let menu = (path + [command.name]).joined(separator: "/")
         stack.append(Level(title: command.name, icon: command.icon,
-                           entries: commands.map { Entry(.command($0), in: menu) }, script: script))
+                           entries: commands.map { CommandEntry($0, at: directory, in: menu) },
+                           script: script, directory: directory))
         settle()
         if let query { self.query = query }  // didSet re-runs the search against the level just pushed
     }
@@ -156,22 +123,23 @@ final class Launcher {
     /// with a spinner, so a slow plugin does not look like a dead panel. `delay` debounces the
     /// per-keystroke case; a run the query or level has outpaced drops its output.
     private func produce(_ script: String, _ argument: String?, after delay: Duration = .zero) {
+        let directory = stack[stack.count - 1].directory
         settle()
         loading = true
         let generation = self.generation
         pending = Task { @MainActor in
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled else { return }
-            let commands = await Launcher.produce(script, argument, in: Config.directory)
+            let commands = await Launcher.produce(script, argument, in: directory)
             guard generation == self.generation else { return }
             loading = false
-            let entries = (commands ?? []).map { Entry(.command($0), in: path.joined(separator: "/")) }
+            let entries = (commands ?? []).map { CommandEntry($0, at: directory, in: path.joined(separator: "/")) }
             stack[stack.count - 1].entries = entries
             if stack[stack.count - 1].script == nil {
                 search()  // whatever the user typed meanwhile filters the fresh list
             } else {
                 // Not `search()`: on a live level that would run the script again, forever.
-                results = entries.map(\.item)
+                results = entries
                 selected = 0
             }
         }
@@ -179,7 +147,7 @@ final class Launcher {
 
     // ponytail: cancellation only skips a run that has not started; one that has runs to the end
     // and its output is dropped. Kill the process once a plugin is slow enough to be worth it.
-    private static func produce(_ script: String, _ argument: String?, in directory: URL) async -> [Config.Command]? {
+    static func produce(_ script: String, _ argument: String?, in directory: URL) async -> [Config.Command]? {
         await Task.detached {
             let process = Process()
             process.executableURL = URL(filePath: "/bin/sh")
@@ -196,15 +164,24 @@ final class Launcher {
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
 
-            let decoder = JSONDecoder()
-            decoder.allowsJSON5 = true
             do {
-                return try decoder.decode([Config.Command].self, from: data)
+                return try Config.decoder().decode([Config.Command].self, from: data)
             } catch {
                 NSLog("syures: ignoring menu output — \(error)")
                 return nil
             }
         }.value
+    }
+
+
+    /// Spawns and forgets: waiting would freeze the card until the process is done.
+    private static func shell(_ script: String, _ argument: String?, in directory: URL) {
+        let process = Process()
+        process.executableURL = URL(filePath: "/bin/sh")
+        process.arguments = shellArguments(script, argument)
+        // `./script.sh` in a command means what it looks like: next to its own plugin.
+        process.currentDirectoryURL = directory
+        try? process.run()
     }
 
     /// Passed to `sh` as a real positional parameter, so the query never becomes shell syntax.
@@ -213,87 +190,83 @@ final class Launcher {
         ["-c", script, "syures"] + (argument.map { [$0] } ?? [])
     }
 
-    private static func shell(_ script: String, _ argument: String?) {
-        let process = Process()
-        process.executableURL = URL(filePath: "/bin/sh")
-        process.arguments = shellArguments(script, argument)
-        // `./script.sh` in a command means what it looks like: next to the config.
-        process.currentDirectoryURL = Config.directory
-        try? process.run()
-    }
-
-    /// The root command whose `prefix` starts `query`, and the rest of the query — its argument.
-    /// The longest prefix wins, so a `"g"` entry does not shadow a `"gh "` one written after it.
-    static func prefixed(_ query: String, in commands: [Config.Command]) -> (command: Config.Command, argument: String)? {
-        var best: (command: Config.Command, argument: String)?
-        for command in commands {
-            guard let prefix = command.prefix, !prefix.isEmpty,
-                  prefix.count > best?.command.prefix?.count ?? 0,
-                  let match = query.range(of: prefix, options: [.caseInsensitive, .anchored])
-            else { continue }
-            best = (command, String(query[match.upperBound...]))
-        }
-        return best
-    }
-
     private func search() {
         selected = 0
         argument = nil
-        let needle = Array(query.lowercased().utf8)
 
-        if stack.isEmpty, let match = Launcher.prefixed(query, in: config.commands) {
+        if stack.isEmpty, let match = config.plugins.prefixed(query) {
             // The prefix takes the query over: what follows it is an argument, not a search term.
             if let script = match.command.menu {
                 // A search plugin: its level opens right away and the query becomes its `$1`.
                 // The query is not touched here, inside its own `didSet`: the field is still
                 // committing the text that got us here and would keep showing it. The prefix is
                 // stripped on the next turn of the run loop, and that edit runs the script.
-                push(match.command, [], script: script, query: nil)
+                push(match.command, [], script: script, at: match.directory, query: nil)
                 results = []
                 let argument = match.argument
                 DispatchQueue.main.async { self.query = argument }
                 return
             }
             argument = match.argument
-            results = [.command(match.command)]
+            results = [CommandEntry(match.command, at: match.directory)]
             return
         }
 
         if let level = stack.last, let script = level.script {
             // The script does the filtering — every run is for the query as typed now.
-            results = level.entries.map(\.item)
+            results = level.entries
             produce(script, query, after: .milliseconds(300))
             return
         }
 
         if let level = stack.last {
             // A menu is authored, so an empty query keeps its order instead of showing nothing.
-            results = needle.isEmpty
-                ? level.entries.map(\.item)
-                : ranked(needle, in: [level.entries])
+            results = query.isEmpty ? level.entries : merge([level.entries], for: query)
             return
         }
-        results = needle.isEmpty ? [] : ranked(needle, in: [commands, apps])
+        guard !query.isEmpty else {
+            results = []
+            return
+        }
+        results = merge(providers.map { $0.search(query) }, for: query)
     }
 
-    private func ranked(_ needle: [UInt8], in groups: [[Entry]]) -> [Item] {
-        var scored: [(entry: Entry, score: Int, frecency: Double)] = []
+    /// A candidate and everything the ordering needs, so the sort reads as the rule the docs
+    /// state rather than as tuple indices.
+    private struct Ranked {
+        let entry: Entry
+        let score: Int
+        let frecency: Double
+        /// The provider's place in the registry — the last tie-break before the name.
+        let rank: Int
+    }
+
+    /// The rows for a query in the order they are shown: score first, then frecency, then the
+    /// provider's place in the registry, then the name — `groups` is one array per provider, so
+    /// that place is just the index.
+    func merge(_ groups: [[Entry]], for query: String) -> [Entry] {
+        let needle = Array(query.lowercased().utf8)
         let now = Date().timeIntervalSinceReferenceDate
-        for group in groups {
-            for entry in group {
-                if let score = Launcher.fuzzyScore(needle, entry.haystack, bonus: entry.bonus) {
-                    scored.append((entry, score, frecency(for: entry.frecencyID, now: now)))
+        var scored = groups.enumerated().flatMap { rank, entries in
+            entries.compactMap { entry in
+                entry.score(needle).map {
+                    Ranked(entry: entry, score: $0,
+                           frecency: frecency(for: entry.frecencyID, now: now), rank: rank)
                 }
             }
         }
+        // An answer to the query cancels everything that merely resembles it.
+        if scored.contains(where: { $0.entry.exclusive }) {
+            scored.removeAll { !$0.entry.exclusive }
+        }
         // Frecency only orders equally good matches, so a better match always wins — a weighted
         // bonus cannot do that, since the gaps it would have to stay under are as small as 2.
-        scored.sort {
+        return scored.sorted {
             if $0.score != $1.score { return $0.score > $1.score }
             if $0.frecency != $1.frecency { return $0.frecency > $1.frecency }
+            if $0.rank != $1.rank { return $0.rank < $1.rank }
             return $0.entry.name < $1.entry.name
-        }
-        return scored.map(\.entry.item)
+        }.map(\.entry)
     }
 
     // MARK: - Frecency
@@ -302,26 +275,20 @@ final class Launcher {
 
     /// Kind- and menu-qualified, so an app never shares a record with a command of the same name,
     /// and neither does a command with its namesake one submenu over.
-    private static func frecencyID(_ item: Item, in menu: String) -> String {
-        switch item {
-        case .app(let url): "app:\(url.path)"
-        case .command(let command): "cmd:\(menu)/\(command.name)"
-        }
-    }
-
     /// `frecencyID -> [launch count, last run]`, so a familiar item leads its equally good rivals.
     /// ponytail: whole dict rewritten on every launch; it is a handful of names, not a database
     private var records: [String: [Double]] =
         UserDefaults.standard.dictionary(forKey: Launcher.frecencyKey) as? [String: [Double]] ?? [:]
 
-    private func remember(_ id: String) {
+    private func remember(_ id: String?) {
+        guard let id else { return }  // a calculation, not something with a history
         let count = records[id]?.first ?? 0
         records[id] = [count + 1, Date().timeIntervalSinceReferenceDate]
         UserDefaults.standard.set(records, forKey: Launcher.frecencyKey)
     }
 
-    private func frecency(for id: String, now: TimeInterval) -> Double {
-        guard let record = records[id], record.count == 2 else { return 0 }
+    private func frecency(for id: String?, now: TimeInterval) -> Double {
+        guard let id, let record = records[id], record.count == 2 else { return 0 }
         return Launcher.frecency(count: record[0], age: now - record[1])
     }
 
@@ -419,7 +386,7 @@ final class Launcher {
     }
 
     #if DEBUG
-    static func fuzzySelfCheck() {
+    static func selfCheck() {
         func score(_ needle: String, _ name: String) -> Int {
             guard let value = fuzzyScore(needle, name) else {
                 assertionFailure("\(needle) should match \(name)")
@@ -443,10 +410,23 @@ final class Launcher {
         assert(score("am", "Amphetamine") > score("am", "Activity Monitor"))  // contiguous wins
         assert(score("chr", "Google Chrome") > score("chr", "Chrome Remote Desktop Host Uninstaller"))
         // Frecency: more launches rank higher, and an old burst decays below a fresh single run.
-        // It never outranks a better match — `ranked` sorts by score first, so the asserts above
+        // It never outranks a better match — `merge` sorts by score first, so the asserts above
         // hold whatever the launch history is.
         assert(frecency(count: 3, age: 0) > frecency(count: 1, age: 0))
         assert(frecency(count: 5, age: 90 * 86400) < frecency(count: 1, age: 0))
+        // Merging, on rows made up here rather than whatever this machine has installed.
+        let launcher = Launcher()
+        let apps = [Entry("Nosafari"), Entry("Safari"), Entry("Salt Fixer")]
+        let ranked = launcher.merge([apps], for: "saf")
+        assert(ranked.count == 3 && ranked.first?.name == "Safari")  // all match, the best leads
+        assert(launcher.merge([apps], for: "zzz").isEmpty)
+        // An answer takes the whole list: "2+2" shows the sum, not the apps that resemble it.
+        let answer = launcher.merge([[Entry("2+2 Player")], Calculator().search("2+2")], for: "2+2")
+        assert(answer.map(\.name) == ["= 4"])
+        // On an equal score the provider listed first wins.
+        let first = Entry("Same")
+        let tied = launcher.merge([[first], [Entry("Same")]], for: "same")
+        assert(tied.count == 2 && tied.first === first)
     }
     #endif
 
@@ -473,20 +453,4 @@ final class Launcher {
         return exists
     }
 
-    private static let searchPaths = [
-        "/Applications", "/Applications/Utilities",
-        "/System/Applications", "/System/Applications/Utilities",
-        NSHomeDirectory() + "/Applications",
-    ]
-
-    // ponytail: flat scan once at launch; add an FSEvents watcher if apps get installed mid-session
-    private static func installedApps() -> [URL] {
-        searchPaths
-            .flatMap { path -> [URL] in
-                let contents = try? FileManager.default.contentsOfDirectory(
-                    at: URL(filePath: path), includingPropertiesForKeys: nil)
-                return contents ?? []
-            }
-            .filter { $0.pathExtension == "app" }
-    }
 }

@@ -1,0 +1,8 @@
+// Install:  git clone <this repo> ~/.config/syures/plugins/gh-search
+// (or copy the folder there — `cp -p` keeps the script executable).
+// Typing "gh " opens the level; what follows is the script's $1, re-run on every edit.
+{
+  "commands": [
+    { "name": "GitHub", "prefix": "gh ", "icon": "globe", "menu": "./gh-search \"$1\"" },
+  ],
+}

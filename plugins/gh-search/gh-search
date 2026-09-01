@@ -1,11 +1,10 @@
 #!/bin/sh
 # Example plugin: prints a syures submenu of GitHub repos matching $1.
+# Installed as a folder: git clone (or cp -p) into ~/.config/syures/plugins/gh-search —
+# plugin.jsonc next to this script is the manifest, and this folder is the working directory.
 #
-#   cp -r plugins ~/.config/syures/
-#   { "name": "GitHub", "prefix": "gh ", "icon": "globe", "menu": "./plugins/gh-search \"$1\"" }
-#
-# The one-liner is a shell command, so "$1" has to be passed on explicitly — syures gives it to
-# /bin/sh, not to this script.
+# The one-liner in the manifest is a shell command, so "$1" has to be passed on explicitly —
+# syures gives it to /bin/sh, not to this script.
 #
 # Typing "gh " opens the GitHub level; what you type next is "$1" and this script re-runs on
 # every edit (debounced). Its stdout is the list.
