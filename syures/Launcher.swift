@@ -47,25 +47,6 @@ final class Launcher {
         }
     }
 
-    /// A searchable item with its match key precomputed, so the keystroke path allocates nothing.
-    private struct Entry {
-        let item: Item
-        let name: String
-        /// Key of this item's frecency record.
-        let frecencyID: String
-        /// `name` lowercased, as UTF-8 bytes.
-        let haystack: [UInt8]
-        /// Positional bonus per byte of `haystack`.
-        let bonus: [Int]
-
-        init(_ item: Item, in menu: String = "") {
-            self.item = item
-            name = item.name
-            frecencyID = Launcher.frecencyID(item, in: menu)
-            (haystack, bonus) = Launcher.matchKey(name)
-        }
-    }
-
     var query = "" { didSet { search() } }
     var selected = 0
 
@@ -76,9 +57,7 @@ final class Launcher {
     /// A `menu` script is still filling the level that is already on screen.
     private(set) var loading = false
 
-    /// Query-independent provider results, keyed once — the keystroke path allocates nothing.
-    private let sources = Launcher.providers.flatMap { $0.entries() }.map { Entry(.provided($0)) }
-    private var commands: [Entry] = []
+    private var providers: [any Provider] = []
 
     /// Text after a matched `prefix` — the argument the command's script gets on Enter.
     /// `nil` means no prefix matched, so the script is run with no argument at all.
@@ -105,12 +84,12 @@ final class Launcher {
     var current: (title: String, icon: String?)? { stack.last.map { ($0.title, $0.icon) } }
 
     init() {
-        commands = config.commands.map { Entry(.command($0)) }
+        providers = Launcher.allProviders(config)
     }
 
     func activate() {
         config = Config.load()
-        commands = config.commands.map { Entry(.command($0)) }
+        for index in providers.indices { providers[index].reload(config) }
         stack.removeAll()
         settle()
         query = ""
@@ -274,7 +253,6 @@ final class Launcher {
     private func search() {
         selected = 0
         argument = nil
-        let needle = Array(query.lowercased().utf8)
 
         if stack.isEmpty, let match = Launcher.prefixed(query, in: config.commands) {
             // The prefix takes the query over: what follows it is an argument, not a search term.
@@ -303,39 +281,40 @@ final class Launcher {
 
         if let level = stack.last {
             // A menu is authored, so an empty query keeps its order instead of showing nothing.
-            results = needle.isEmpty
+            results = query.isEmpty
                 ? level.entries.map(\.item)
-                : ranked(needle, in: [level.entries])
+                : merge([Entry.search(level.entries, query)])
             return
         }
-        guard !needle.isEmpty else {
+        guard !query.isEmpty else {
             results = []
             return
         }
-        // Pinned provider results come first and unranked, the way Raycast puts a calculation
-        // above the list; `sources` (the apps) compete with the config commands below them.
-        let provided = Launcher.providers.flatMap { $0.immediate(query) }.map(Item.provided)
-        results = provided + ranked(needle, in: [commands, sources])
+        results = merge(providers.map { $0.search(query) })
     }
 
-    private func ranked(_ needle: [UInt8], in groups: [[Entry]]) -> [Item] {
-        var scored: [(entry: Entry, score: Int, frecency: Double)] = []
-        let now = Date().timeIntervalSinceReferenceDate
-        for group in groups {
-            for entry in group {
-                if let score = Launcher.fuzzyScore(needle, entry.haystack, bonus: entry.bonus) {
-                    scored.append((entry, score, frecency(for: entry.frecencyID, now: now)))
-                }
-            }
+    /// The rows for a query in the order they are shown: score first, then frecency, then the
+    /// provider's place in the registry. `groups` is one array per provider, so that place is
+    /// just the index.
+    private func merge(_ groups: [[Match]]) -> [Item] {
+        var found = groups.enumerated().flatMap { rank, matches in matches.map { (rank, $0) } }
+        // An answer to the query cancels everything that merely resembles it.
+        if found.contains(where: { $0.1.exclusive }) {
+            found.removeAll { !$0.1.exclusive }
         }
+        let now = Date().timeIntervalSinceReferenceDate
         // Frecency only orders equally good matches, so a better match always wins — a weighted
         // bonus cannot do that, since the gaps it would have to stay under are as small as 2.
-        scored.sort {
-            if $0.score != $1.score { return $0.score > $1.score }
-            if $0.frecency != $1.frecency { return $0.frecency > $1.frecency }
-            return $0.entry.name < $1.entry.name
+        let scored = found.map {
+            ($0.0, $0.1, frecency(for: Launcher.frecencyID($0.1.item, in: path.joined(separator: "/")),
+                                  now: now))
         }
-        return scored.map(\.entry.item)
+        return scored.sorted {
+            if $0.1.score != $1.1.score { return $0.1.score > $1.1.score }
+            if $0.2 != $1.2 { return $0.2 > $1.2 }
+            if $0.0 != $1.0 { return $0.0 < $1.0 }
+            return $0.1.item.name < $1.1.item.name
+        }.map(\.1.item)
     }
 
     // MARK: - Frecency
@@ -344,7 +323,7 @@ final class Launcher {
 
     /// Kind- and menu-qualified, so an app never shares a record with a command of the same name,
     /// and neither does a command with its namesake one submenu over.
-    private static func frecencyID(_ item: Item, in menu: String) -> String {
+    static func frecencyID(_ item: Item, in menu: String) -> String {
         switch item {
         case .command(let command): "cmd:\(menu)/\(command.name)"
         case .provided(let result): result.id ?? ""  // no id: nothing worth remembering
@@ -490,13 +469,13 @@ final class Launcher {
         // hold whatever the launch history is.
         assert(frecency(count: 3, age: 0) > frecency(count: 1, age: 0))
         assert(frecency(count: 5, age: 90 * 86400) < frecency(count: 1, age: 0))
-        // ...and it is pinned above the ranked list, which still works.
+        // An answer takes the whole list: "2+2" shows the sum, not apps that resemble it.
         let launcher = Launcher()
         launcher.query = "2+2"
-        assert(launcher.results.first == .provided(Calculator.evaluate("2+2")!))
-        // Apps come from a provider too, but as `entries()`: query-independent, so they rank
-        // rather than pin. `Calculator.app` ships with macOS and is in `searchPaths`.
-        assert(AppsProvider().entries().contains { $0.name == "Calculator" })
+        assert(launcher.results == [.provided(Calculator.evaluate("2+2")!)])
+        // Apps are a provider too, and theirs is an ordinary match, so it ranks with the rest.
+        // `Calculator.app` ships with macOS and is in `searchPaths`.
+        assert(AppsProvider.installed().contains { $0.name == "Calculator" })
         launcher.query = "calculator"
         assert(launcher.results.contains { $0.name == "Calculator" })
     }

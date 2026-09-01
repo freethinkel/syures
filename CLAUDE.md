@@ -93,25 +93,30 @@ the end and its output is dropped.
 A `menu` needs a `prefix` to recompute per keystroke, and pays for it with debounce, cancellation
 and generation checks.
 
-Everything that fills the list is a `ResultProvider` (`syures/Providers/`, one file per
-provider), and the protocol has three methods because there are three costs:
+Everything that fills the list is a `Provider` (`syures/Providers/`, one file each). The protocol
+is one method — `search(_:) -> [Match]` — and the scoring lives inside the provider rather than
+outside it, for the sake of sources whose answer is in no list at all: a calculator reads `2+2`,
+and "4" would never match the query it came from. `Entry` is the shared match key (name lowercased
+to UTF-8 plus positional bonuses) and `Entry.search` the shape every list-backed provider uses, so
+all their scores stay comparable. `reload(_:)` is for what comes from the config; sources that do
+not read it skip it.
 
-- `entries()` — a list that does not depend on the query, asked once (`AppsProvider`). It goes
-  through `ranked`, so it competes on fuzzy score and then on frecency.
-- `immediate(_:)` — computed from the query in the same frame (`Calculator`). Pinned above the
-  ranked list, skipping both ranking and frecency.
-- `deferred(_:)` — a subprocess or the network. Declared, not yet wired: `menu` plugins still run
-  through `produce`/`stack`.
+A `Match` is an item, a score, and `exclusive` — an answer to the query rather than a match for
+it. One exclusive match in the list and only those are shown, which is how `2+2` shows the sum
+instead of apps whose names resemble it. `merge` then orders by score, frecency, and the
+provider's place in `Launcher.allProviders` — that array is the registry, and adding a provider is
+adding a file next to it plus a word in it. A Swift type cannot be registered at runtime, which is
+what `menu` scripts are for.
 
-A provider implements the one it needs; the rest default to empty. Registration is one array,
-`Launcher.providers` in ResultProvider.swift — no config, no plugin loading, because a Swift type
-cannot be added without recompiling. That is what `menu` scripts are for. Adding a provider means
-adding a file there and a word to that array.
+`AppsProvider` and `Calculator` yield `.provided` items — `Action` (`copy`/`run`/`open`) and `Icon`
+(`symbol`/`file`) are data, not closures, which keeps `Provided` `Hashable` and the provider pure,
+and `id` is its frecency key (`nil` for a calculation, `"app:<path>"` for an app). `CommandsProvider`
+yields `.command` items instead, because a command can carry `commands` or `menu`, and opening a
+submenu is a state the card goes into, which a `Provided` cannot express.
 
-A provider's result is a `Provided`: `Action` (`copy`/`run`/`open`) and `Icon` (`symbol`/`file`)
-are data, not closures, which keeps it `Hashable` and the provider pure. `id` is its frecency key
-— `nil` for a calculation, `"app:<path>"` for an app, so launch counts survive. `Item` therefore
-has only two cases: `.command`, which can open a submenu, and `.provided`, which cannot.
+`syures/Config/` splits the same way: `Config` (loading, schema, self-check), `Appearance`,
+`Color`, `Command`, and `Template` — the file written on first run, which is also the
+documentation of every key.
 
 Adding user-facing customization means adding a key to `Config.Appearance`/`Config.Command`, not
 new UI.

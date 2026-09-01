@@ -3,9 +3,11 @@ import JavaScriptCore
 
 /// `2.5*2` -> `= 5`, copied on Enter. Synchronous and pure, which is what lets it run on every
 /// keystroke — a `menu` plugin cannot, being a `fork`/`exec`.
-struct Calculator: ResultProvider {
-    func immediate(_ query: String) -> [Launcher.Provided] {
-        Calculator.evaluate(query).map { [$0] } ?? []
+struct Calculator: Provider {
+    /// Exclusive: an answer to `2+2` cancels every app whose name merely resembles it.
+    func search(_ query: String) -> [Match] {
+        Calculator.evaluate(query).map { [Match(item: .provided($0), score: 0, exclusive: true)] }
+            ?? []
     }
 
     /// ponytail: JavaScriptCore rather than a parser or `NSExpression` — a half-typed expression
