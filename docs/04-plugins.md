@@ -4,11 +4,11 @@ A plugin is a folder under `~/.config/syures/plugins/`. Installing one is making
 
 ```
 ~/.config/syures/plugins/<name>/
-  plugin.jsonc     the manifest: a JSON array of commands
+  plugin.jsonc     the manifest
   …                whatever else the plugin needs — scripts run from this folder
 ```
 
-The manifest has the same shape a `menu` script prints, with the same three keys per command: `run`, `commands`, `menu`. `config.schema.json` describes both. On the first run syures writes `plugins/starter/` — a working manifest with `install`/`update` commands and examples to steal.
+The manifest is an object with one key today — `commands`, the same array a `menu` script prints, with the same three keys per command: `run`, `commands`, `menu`. `config.schema.json` describes the config, the manifest, and `menu` output alike. On the first run syures writes `plugins/starter/` — a working manifest with `install`/`update` commands and examples to steal.
 
 ```sh
 # install
@@ -31,7 +31,9 @@ done | sed 's/^/[/; s/,$/]/'
 
 ```jsonc
 // ~/.config/syures/plugins/projects/plugin.jsonc
-[{ "name": "Projects", "icon": "folder", "menu": "./projects ~/Developer" }]
+{ "commands": [
+  { "name": "Projects", "icon": "folder", "menu": "./projects ~/Developer" },
+]}
 ```
 
 The argument goes in the `menu` string. Or it comes from the user through `prefix`, covered in [Commands](03-commands.md#prefix).

@@ -53,7 +53,7 @@ struct Config: Decodable {
             }
             do {
                 return Plugin(directory: folder,
-                              commands: try decoder().decode([Command].self, from: data))
+                              commands: try decoder().decode(Manifest.self, from: data).commands)
             } catch {
                 NSLog("syures: ignoring plugin \(folder.lastPathComponent) — \(error)")
                 return nil
@@ -128,7 +128,7 @@ struct Config: Decodable {
         assert(plugins.prefixed("ghost")?.command.name == "Google")
         // The files written on first run must parse with the app's own decoder.
         assert((try? decoder().decode(Config.self, from: Data(template.utf8))) != nil)
-        assert((try? decoder().decode([Command].self, from: Data(starterPlugin.utf8))) != nil)
+        assert((try? decoder().decode(Manifest.self, from: Data(starterPlugin.utf8)))?.commands.isEmpty == false)
     }
     #endif
 

@@ -65,7 +65,8 @@ Ownership chain: `SyuresApp` → `AppDelegate` → `LauncherPanel` → `Launcher
 ## Plugins are the extension point
 
 Commands come from plugins, not the config: a plugin is a folder under `plugins/` next to the
-config — usually a `git clone` — whose `plugin.jsonc` is a JSON array of `Command`. The folder is
+config — usually a `git clone` — whose `plugin.jsonc` is a manifest: an object with one key today, `commands` — see
+`Config.Manifest`, where a future key is an addition rather than a format break. The folder is
 the working directory its scripts run from, so `./script.sh` in a manifest means the plugin's own
 script. Installing is cloning, updating is `git pull`, removing is deleting the folder; the
 starter plugin (written on first run, `Config.starterPlugin`) wraps install/update as commands.

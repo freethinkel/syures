@@ -20,12 +20,26 @@ extension Config {
 }
 
 extension Config {
-    /// A folder under `plugins/`: its `plugin.jsonc` is an array of commands — the same shape
-    /// `menu` output and the old config `commands` had — and the folder is the working directory
-    /// their scripts run from, so `./script.sh` inside a plugin means the plugin's own script.
+    /// A folder under `plugins/`: `plugin.jsonc` is its manifest, and the folder is the working
+    /// directory its scripts run from, so `./script.sh` inside a plugin means the plugin's own
+    /// script.
     struct Plugin {
         let directory: URL
         let commands: [Command]
+    }
+
+    /// What `plugin.jsonc` holds. One key today: `commands`, the same array a `menu` prints.
+    /// An object rather than the bare array, so a future key (a minimum app version, say) is an
+    /// addition, not a format break.
+    struct Manifest: Decodable {
+        var commands: [Command]
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            commands = container.value(.commands, or: [])
+        }
+
+        private enum CodingKeys: String, CodingKey { case commands }
     }
 }
 
